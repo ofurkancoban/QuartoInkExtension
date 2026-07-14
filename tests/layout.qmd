@@ -1,0 +1,92 @@
+---
+title: "Ink Layout Test"
+format:
+  revealjs:
+    theme: default
+revealjs-plugins:
+  - ink
+---
+
+## Layout results
+
+::: {#results}
+Running...
+:::
+
+```{=html}
+<script>
+window.addEventListener("load", function () {
+  setTimeout(function () {
+    var out = [];
+    var api = window.InkAnnotate._api;
+    api.setDrawMode(true);
+
+    function measure(label) {
+      var root = document.getElementById("ink-orb-root");
+      var rx = parseFloat(root.style.left);
+      var ry = parseFloat(root.style.top);
+      var petals = Array.prototype.slice.call(
+        document.querySelectorAll(".ink-petal")
+      ).filter(function (el) { return el.offsetParent !== null; });
+      var pts = petals.map(function (el) {
+        return {
+          x: rx + parseFloat(el.style.getPropertyValue("--tx")),
+          y: ry + parseFloat(el.style.getPropertyValue("--ty")),
+          r: el.offsetWidth / 2,
+          t: el.title
+        };
+      });
+      var worstPair = 0, overlapInfo = "";
+      for (var i = 0; i < pts.length; i++) {
+        for (var j = i + 1; j < pts.length; j++) {
+          var d = Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y);
+          var need = pts[i].r + pts[j].r;
+          if (need - d > worstPair) {
+            worstPair = need - d;
+            overlapInfo = pts[i].t + " / " + pts[j].t;
+          }
+        }
+      }
+      var offscreen = pts.filter(function (p) {
+        return p.x - p.r < 0 || p.x + p.r > window.innerWidth ||
+               p.y - p.r < 0 || p.y + p.r > window.innerHeight;
+      }).length;
+      var onOrb = pts.filter(function (p) {
+        return Math.hypot(p.x - rx, p.y - ry) < p.r + 29;
+      }).length;
+      out.push((worstPair <= 0.5 ? "PASS" : "FAIL") +
+        " - no petal overlap (" + label + ")" +
+        (worstPair > 0.5 ? " worst " + worstPair.toFixed(1) + "px: " +
+          overlapInfo : ""));
+      out.push((offscreen === 0 ? "PASS" : "FAIL") +
+        " - all petals on screen (" + label + ")");
+      out.push((onOrb === 0 ? "PASS" : "FAIL") +
+        " - no petal covers orb (" + label + ")");
+    }
+
+    var spots = [
+      ["corner", window.innerWidth - 64, window.innerHeight - 64],
+      ["edge", window.innerWidth - 40, window.innerHeight / 2],
+      ["center", window.innerWidth / 2, window.innerHeight / 2],
+      ["top-left", 40, 40]
+    ];
+
+    api.setTool("pen");
+    api.openBloom();
+    spots.forEach(function (s) {
+      api.moveOrb(s[1], s[2]);
+      measure("pen@" + s[0]);
+    });
+
+    api.setTool("shape");
+    spots.forEach(function (s) {
+      api.moveOrb(s[1], s[2]);
+      measure("shape@" + s[0]);
+    });
+
+    document.getElementById("results").innerHTML =
+      "<pre style='font-size:0.42em'>" + out.join("\n") + "</pre>";
+  }, 1500);
+});
+</script>
+```

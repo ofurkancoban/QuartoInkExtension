@@ -1,0 +1,345 @@
+---
+title: "Ink Logic Test"
+format:
+  revealjs:
+    theme: default
+revealjs-plugins:
+  - ink
+---
+
+## Test results
+
+::: {#results}
+Running...
+:::
+
+## Slide two
+
+```{=html}
+<script>
+window.addEventListener("load", function () {
+  setTimeout(function () {
+    var out = [];
+    function check(name, cond) {
+      out.push((cond ? "PASS" : "FAIL") + " - " + name);
+    }
+    var api = window.InkAnnotate._api;
+    var canvas = document.getElementById("ink-canvas");
+    localStorage.removeItem(api.storageKey());
+    Object.keys(api.getStrokes()).forEach(function (k) {
+      delete api.getStrokes()[k];
+    });
+    api.setDrawMode(true);
+    function ev(type, x, y) {
+      canvas.dispatchEvent(new PointerEvent(type, {
+        clientX: x, clientY: y, pointerId: 1, pointerType: "mouse",
+        buttons: 1, bubbles: true, pressure: 0.5
+      }));
+    }
+    function stroke(x0, y0, x1, y1) {
+      ev("pointerdown", x0, y0);
+      for (var i = 1; i <= 10; i++) {
+        ev("pointermove", x0 + (x1 - x0) * i / 10, y0 + (y1 - y0) * i / 10);
+      }
+      ev("pointerup", x1, y1);
+    }
+    function count() {
+      return (api.getStrokes()["0.0"] || []).length;
+    }
+
+    api.setTool("pen");
+    stroke(300, 300, 600, 300);
+    stroke(300, 350, 600, 350);
+    check("two strokes drawn", count() === 2);
+
+    // slide-space storage: points must differ from raw client coords
+    var p = api.getStrokes()["0.0"][0].points[0];
+    var scale = Reveal.getScale();
+    var rect = document.querySelector(".slides").getBoundingClientRect();
+    var expected = (300 - rect.left) / scale;
+    check("points stored in slide coordinates",
+      Math.abs(p[0] - expected) < 1);
+
+    api.undo();
+    check("undo removes one", count() === 1);
+    api.redo();
+    check("redo restores it", count() === 2);
+
+    api.setTool("eraser");
+    stroke(450, 340, 460, 360);
+    check("eraser removes hit stroke", count() === 1);
+    api.undo();
+    check("undo restores erased stroke", count() === 2);
+    api.redo();
+    check("redo re-erases it", count() === 1);
+
+    api.setShape("rect");
+    stroke(200, 200, 400, 280);
+    check("shape stroke added", count() === 2);
+    var last = api.getStrokes()["0.0"][1];
+    check("shape recorded as rect",
+      last.tool === "shape" && last.shape === "rect");
+    var autoBar = document.querySelector(".ink-sel-controls");
+    check("new shape is auto-selected",
+      !!autoBar && autoBar.style.display !== "none");
+    // tapping the interior of a rect selects it too
+    api.setTool("pen"); // deselect via tool change
+    api.setTool("shape");
+    check("tool change deselects", autoBar.style.display === "none");
+    ev("pointerdown", 300, 240); // inside the rect, not on its edge
+    ev("pointerup", 300, 240);
+    check("tap inside rect selects it",
+      autoBar.style.display !== "none");
+    api.setTool("pen");
+    api.setTool("shape");
+
+    api.setTool("eraser");
+    stroke(200, 200, 210, 210); // corner of rect
+    check("eraser removes shape by perimeter", count() === 1);
+
+    // smart snapping: near-horizontal line snaps to exactly horizontal
+    api.setShape("line");
+    stroke(300, 500, 600, 508);
+    var snapped = api.getStrokes()["0.0"].slice(-1)[0];
+    check("near-horizontal line snaps flat",
+      Math.abs(snapped.points[0][1] - snapped.points[1][1]) < 0.01);
+
+    // near-square rect snaps to a square
+    api.setShape("rect");
+    stroke(700, 300, 800, 396);
+    var sq = api.getStrokes()["0.0"].slice(-1)[0];
+    check("near-square rect snaps square",
+      Math.abs(Math.abs(sq.points[1][0] - sq.points[0][0]) -
+               Math.abs(sq.points[1][1] - sq.points[0][1])) < 0.01);
+
+    // ---- text tool ----
+    api.setTool("text");
+    ev("pointerdown", 640, 520);
+    ev("pointerup", 640, 520);
+    var ta = document.querySelector(".ink-text-editor");
+    check("text tap opens editor", !!ta);
+    var beforeText = count();
+    ta.value = "Hello ink";
+    api.commitTextEditor();
+    var note = api.getStrokes()["0.0"].slice(-1)[0];
+    check("text note committed",
+      count() === beforeText + 1 &&
+      note.tool === "text" && note.text === "Hello ink");
+    api.undo();
+    check("undo removes text note", count() === beforeText);
+    api.redo();
+    check("redo restores text note", count() === beforeText + 1);
+
+    // tap on the note re-opens its editor prefilled
+    var nsx = rect.left + (note.points[0][0] + 5) * scale;
+    var nsy = rect.top + (note.points[0][1] + 5) * scale;
+    ev("pointerdown", nsx, nsy);
+    ev("pointerup", nsx, nsy);
+    var ta2 = document.querySelector(".ink-text-editor");
+    check("tap on note reopens editor",
+      !!ta2 && ta2.value === "Hello ink");
+    ta2.value = "Edited";
+    api.commitTextEditor();
+    check("text edit committed", note.text === "Edited");
+    api.undo();
+    check("undo restores original text", note.text === "Hello ink");
+    api.redo();
+
+    // dragging a note moves it, and the move is undoable
+    var origX = note.points[0][0];
+    ev("pointerdown", nsx, nsy);
+    ev("pointermove", nsx + 60, nsy + 30);
+    ev("pointerup", nsx + 60, nsy + 30);
+    check("drag moves text note",
+      Math.abs(note.points[0][0] - origX - 60 / scale) < 1);
+    api.undo();
+    check("undo restores note position",
+      Math.abs(note.points[0][0] - origX) < 0.01);
+
+    // corner controls: plus grows the font, handle moves the box
+    api.setTool("text");
+    ev("pointerdown", nsx, nsy);
+    ev("pointerup", nsx, nsy);
+    var bar = document.querySelector(".ink-ed-controls");
+    check("editor shows corner controls",
+      !!bar && bar.children.length === 4);
+    var sizeBefore = note.size;
+    bar.children[2].dispatchEvent(new PointerEvent("pointerdown",
+      { bubbles: true, pointerId: 21 }));
+    api.commitTextEditor();
+    check("plus button grows font size", note.size > sizeBefore);
+    api.undo();
+    check("undo restores font size", note.size === sizeBefore);
+
+    ev("pointerdown", nsx, nsy);
+    ev("pointerup", nsx, nsy);
+    var handle = document.querySelector(".ink-ed-controls .ink-text-move");
+    var hr = handle.getBoundingClientRect();
+    var hx = hr.left + 5, hy = hr.top + 5;
+    handle.dispatchEvent(new PointerEvent("pointerdown",
+      { bubbles: true, pointerId: 22, clientX: hx, clientY: hy }));
+    handle.dispatchEvent(new PointerEvent("pointermove",
+      { bubbles: true, pointerId: 22,
+        clientX: hx + 50, clientY: hy + 25 }));
+    handle.dispatchEvent(new PointerEvent("pointerup",
+      { bubbles: true, pointerId: 22,
+        clientX: hx + 50, clientY: hy + 25 }));
+    api.commitTextEditor();
+    check("handle drag moves note",
+      Math.abs(note.points[0][0] - origX - 50 / scale) < 1);
+    api.undo();
+    check("undo restores handle move",
+      Math.abs(note.points[0][0] - origX) < 0.01);
+
+    // trash button deletes the note (undoably)
+    var delBefore = count();
+    ev("pointerdown", nsx, nsy);
+    ev("pointerup", nsx, nsy);
+    document.querySelector(".ink-ed-controls .ink-text-trash")
+      .dispatchEvent(new PointerEvent("pointerdown",
+        { bubbles: true, pointerId: 23 }));
+    check("trash button deletes note", count() === delBefore - 1);
+    api.undo();
+    check("undo restores trashed note", count() === delBefore);
+
+    // text notes are also grabbable with the pen tool
+    api.setTool("pen");
+    ev("pointerdown", nsx, nsy);
+    ev("pointermove", nsx + 40, nsy + 20);
+    ev("pointerup", nsx + 40, nsy + 20);
+    check("pen drag moves text note",
+      Math.abs(note.points[0][0] - origX - 40 / scale) < 1);
+    api.undo();
+    check("undo restores pen-drag position",
+      Math.abs(note.points[0][0] - origX) < 0.01);
+    var penTap = count();
+    ev("pointerdown", nsx, nsy);
+    ev("pointerup", nsx, nsy);
+    check("pen tap on note draws nothing", count() === penTap);
+
+    // shape selection: tap shows controls, drag moves, trash deletes
+    api.setTool("shape");
+    ev("pointerdown", 700, 300);
+    ev("pointerup", 700, 300);
+    var sbar = document.querySelector(".ink-sel-controls");
+    check("shape tap shows controls",
+      !!sbar && sbar.style.display !== "none");
+    var sqBefore = sq.points[0].slice();
+    ev("pointerdown", 700, 300);
+    ev("pointermove", 730, 320);
+    ev("pointerup", 730, 320);
+    check("shape drag moves it",
+      Math.abs(sq.points[0][0] - sqBefore[0] - 30 / scale) < 1);
+    api.undo();
+    check("undo restores shape position",
+      Math.abs(sq.points[0][0] - sqBefore[0]) < 0.01);
+    var scount = count();
+    ev("pointerdown", 700, 300);
+    ev("pointerup", 700, 300);
+    sbar.querySelector(".ink-text-trash").dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, pointerId: 24 }));
+    check("shape trash deletes it", count() === scount - 1);
+    check("controls hide after delete", sbar.style.display === "none");
+    api.undo();
+    check("undo restores trashed shape", count() === scount);
+
+    // eraser removes text notes by bounding box
+    var beforeErase = count();
+    api.setTool("eraser");
+    stroke(nsx, nsy, nsx + 8, nsy + 8);
+    check("eraser removes text note", count() === beforeErase - 1);
+    api.undo();
+    check("undo restores erased note", count() === beforeErase);
+
+    // leave a plain pen stroke on top of the history for the
+    // gesture test below
+    api.setTool("pen");
+    stroke(300, 600, 400, 600);
+
+    // two-finger tap undoes the last action
+    var before = count();
+    canvas.dispatchEvent(new PointerEvent("pointerdown", {
+      clientX: 400, clientY: 300, pointerId: 11, pointerType: "touch",
+      buttons: 1, bubbles: true }));
+    canvas.dispatchEvent(new PointerEvent("pointerdown", {
+      clientX: 430, clientY: 300, pointerId: 12, pointerType: "touch",
+      buttons: 1, bubbles: true }));
+    canvas.dispatchEvent(new PointerEvent("pointerup", {
+      clientX: 400, clientY: 300, pointerId: 11, pointerType: "touch",
+      bubbles: true }));
+    canvas.dispatchEvent(new PointerEvent("pointerup", {
+      clientX: 430, clientY: 300, pointerId: 12, pointerType: "touch",
+      bubbles: true }));
+    check("two-finger tap undoes", count() === before - 1);
+    api.redo();
+    check("redo after gesture undo", count() === before);
+
+    // burger menu integration: ink appears under Tools and toggles
+    var inkTool = document.querySelector("[data-ink-tool] a");
+    check("burger menu has ink tool", !!inkTool);
+    if (inkTool) {
+      api.setDrawMode(false);
+      inkTool.click();
+      check("menu tool toggles draw mode",
+        document.body.classList.contains("ink-drawing"));
+    }
+
+    // more menu: every item carries an icon
+    check("menu items have icons",
+      document.querySelectorAll(
+        "#ink-menu .ink-menu-item .ink-menu-ico svg").length === 5);
+
+    // annotated html export embeds the strokes as a seed
+    var captured = null;
+    var origCreate = URL.createObjectURL;
+    var origClick = HTMLAnchorElement.prototype.click;
+    URL.createObjectURL = function (b) { captured = b; return "blob:t"; };
+    HTMLAnchorElement.prototype.click = function () {};
+    api.exportHtml(); // async: inlines assets before download
+    setTimeout(function () {
+      URL.createObjectURL = origCreate;
+      HTMLAnchorElement.prototype.click = origClick;
+      check("export html produces a file", !!captured);
+      if (captured) {
+        captured.text().then(function (t) {
+          // build the needle dynamically so this test's own inline
+          // source (also present in the export) cannot match it
+          var orbId = 'id="' + "ink-orb" + '-root"';
+          check("exported html embeds ink seed",
+            t.indexOf("InkAnnotateSeed = {") >= 0 &&
+            t.indexOf('"tool":"text"') >= 0 &&
+            t.indexOf(orbId) < 0);
+        });
+      }
+    }, 500);
+
+    var saved = JSON.parse(localStorage.getItem(api.storageKey()));
+    check("strokes persisted to localStorage",
+      saved && saved["0.0"].length === count());
+
+    var slide1Count = count();
+    Reveal.right();
+    setTimeout(function () {
+      api.setTool("pen");
+      stroke(300, 400, 500, 400);
+      check("slide 2 has own strokes",
+        (api.getStrokes()["1.0"] || []).length === 1);
+      check("slide 1 strokes untouched",
+        (api.getStrokes()["0.0"] || []).length === slide1Count);
+      api.undo();
+      check("undo is per slide",
+        (api.getStrokes()["1.0"] || []).length === 0 &&
+        (api.getStrokes()["0.0"] || []).length === slide1Count);
+      Reveal.left();
+      setTimeout(function () {
+        document.getElementById("results").innerHTML =
+          "<pre style='font-size:0.55em'>" + out.join("\n") + "</pre>";
+        document.title = "ink-tests-" +
+          (out.every(function (l) { return l.indexOf("PASS") === 0; })
+            ? "allpass" : "failed");
+      }, 300);
+    }, 600);
+  }, 1500);
+});
+</script>
+```

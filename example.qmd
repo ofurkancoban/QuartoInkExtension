@@ -1,0 +1,38 @@
+---
+title: "Ink Annotation Demo"
+format:
+  revealjs:
+    theme: default
+revealjs-plugins:
+  - ink
+---
+
+## How to annotate
+
+- Tap the floating **orb** (or press **D**): a radial menu blooms open
+- Inner ring: tools · middle ring: colors · outer ring: stroke sizes
+- Pick the shapes tool and a fourth ring of shapes appears
+- Drag the orb anywhere; the bloom always opens toward the screen
+- Two-finger tap undoes on touch screens; **Z**/**Y** undo/redo
+- Drawings stick to the slide and are restored on reload
+
+## A slide to draw on
+
+Some content worth annotating:
+
+1. First important point
+2. Second important point
+3. Third important point
+
+## Charts love ink
+
+```{=html}
+<div style="width:60%;height:260px;margin:auto;background:linear-gradient(180deg,#eef 0%,#dde 100%);border-radius:8px;display:flex;align-items:flex-end;gap:12px;padding:16px;">
+<div style="flex:1;height:40%;background:#1e88e5;border-radius:4px 4px 0 0;"></div>
+<div style="flex:1;height:70%;background:#43a047;border-radius:4px 4px 0 0;"></div>
+<div style="flex:1;height:55%;background:#fdd835;border-radius:4px 4px 0 0;"></div>
+<div style="flex:1;height:90%;background:#e53935;border-radius:4px 4px 0 0;"></div>
+</div>
+```
+
+Circle the tallest bar!

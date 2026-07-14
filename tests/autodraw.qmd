@@ -1,0 +1,66 @@
+---
+title: "Ink Autodraw Test"
+format:
+  revealjs:
+    theme: default
+revealjs-plugins:
+  - ink
+---
+
+## Draw target
+
+Pen wave, highlighter swipe, arrow, rectangle and ellipse below,
+with the full toolbar and options panel open.
+
+```{=html}
+<script>
+window.addEventListener("load", function () {
+  setTimeout(function () {
+    var api = window.InkAnnotate._api;
+    api.setDrawMode(true);
+    var canvas = document.getElementById("ink-canvas");
+    function ev(type, x, y) {
+      canvas.dispatchEvent(new PointerEvent(type, {
+        clientX: x, clientY: y, pointerId: 1, pointerType: "mouse",
+        buttons: 1, bubbles: true, pressure: 0.5
+      }));
+    }
+    function ev2(type, x, y, pressure) {
+      canvas.dispatchEvent(new PointerEvent(type, {
+        clientX: x, clientY: y, pointerId: 1, pointerType: "pen",
+        buttons: 1, bubbles: true, pressure: pressure
+      }));
+    }
+    function stroke(x0, y0, x1, y1, wavy) {
+      ev2("pointerdown", x0, y0, 0.2);
+      for (var i = 1; i <= 30; i++) {
+        var t = i / 30;
+        ev2("pointermove",
+           x0 + (x1 - x0) * t,
+           y0 + (y1 - y0) * t + (wavy ? Math.sin(t * Math.PI * 2) * 15 : 0),
+           0.2 + 0.8 * Math.sin(t * Math.PI));
+      }
+      ev2("pointerup", x1, y1, 0.1);
+    }
+    api.setTool("pen");
+    api.setColor("#ef4444");
+    stroke(180, 260, 560, 275, true);
+    api.setTool("highlighter");
+    api.setColor("#eab308");
+    stroke(180, 350, 560, 350, false);
+    api.setShape("arrow");
+    api.setColor("#0ea5e9");
+    stroke(620, 420, 800, 300, false);
+    api.setShape("rect");
+    api.setColor("#22c55e");
+    stroke(180, 430, 400, 540, false);
+    api.setShape("ellipse");
+    api.setColor("#6366f1");
+    stroke(450, 430, 620, 540, false);
+    api.setTool("pen");
+    api.setShape("rect");
+    api.openBloom();
+  }, 1500);
+});
+</script>
+```

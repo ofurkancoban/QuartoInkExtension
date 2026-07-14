@@ -1,0 +1,485 @@
+/* Ink: slide annotation UI — the Ink Orb radial menu */
+
+:root {
+  --ink-glass: rgba(22, 22, 30, 0.78);
+  --ink-glass-border: rgba(255, 255, 255, 0.12);
+  --ink-fg: #eceded;
+  --ink-fg-dim: #96969e;
+  --ink-accent: #0a84ff;
+  --ink-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ================= canvas & cursors ================= */
+
+#ink-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+}
+
+#ink-canvas.ink-hide-cursor { cursor: none; }
+body.ink-drawing #ink-canvas { cursor: crosshair; }
+body.ink-drawing #ink-canvas.ink-hide-cursor { cursor: none; }
+body.ink-drawing #ink-canvas.ink-text-cursor { cursor: text; }
+
+/* ================= text editor ================= */
+
+.ink-text-editor {
+  position: fixed;
+  z-index: 46;
+  margin: 0;
+  padding: 4px 6px;
+  border: 1.5px dashed var(--ink-text-tint, #0a84ff);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18),
+              0 0 0 3px color-mix(in srgb,
+                var(--ink-text-tint, #0a84ff) 18%, transparent);
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  font-weight: 600;
+  animation: ink-text-in 0.16s var(--ink-spring);
+}
+
+@keyframes ink-text-in {
+  from { transform: scale(0.94); opacity: 0; }
+  to   { transform: scale(1); opacity: 1; }
+}
+
+#ink-eraser-ring {
+  display: none;
+  position: fixed;
+  z-index: 42;
+  transform: translate(-50%, -50%);
+  border: 1.5px solid rgba(120, 120, 130, 0.9);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.5) inset;
+  pointer-events: none;
+}
+
+#ink-laser {
+  display: none;
+  position: fixed;
+  z-index: 41;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 69, 58, 1) 0%, rgba(255, 69, 58, 0.6) 55%, rgba(255, 69, 58, 0) 75%);
+  box-shadow: 0 0 12px 4px rgba(255, 69, 58, 0.6);
+  pointer-events: none;
+}
+
+/* ================= orb root ================= */
+
+#ink-orb-root {
+  position: fixed;
+  z-index: 50;
+  width: 0;
+  height: 0;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  --orb-tint: #ff453a;
+}
+
+/* ================= the orb ================= */
+
+#ink-orb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  width: 58px;
+  height: 58px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 3;
+  background:
+    radial-gradient(circle at 32% 28%,
+      rgba(255, 255, 255, 0.32) 0%,
+      rgba(255, 255, 255, 0.06) 26%,
+      rgba(0, 0, 0, 0) 44%),
+    conic-gradient(from 210deg,
+      #23232d, #2e2e3c, #1b1b24, #33333f, #23232d);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.45),
+    inset 0 1px 1px rgba(255, 255, 255, 0.22),
+    inset 0 -6px 14px rgba(0, 0, 0, 0.45),
+    0 0 0 2.5px var(--orb-tint);
+  transition: transform 0.25s var(--ink-spring), box-shadow 0.25s ease,
+              opacity 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+  opacity: 0.62;
+}
+
+/* slow iridescent sheen drifting over the glass */
+#ink-orb::before {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg,
+    rgba(255, 69, 58, 0.22), rgba(255, 214, 10, 0.18),
+    rgba(48, 209, 88, 0.18), rgba(100, 210, 255, 0.22),
+    rgba(191, 90, 242, 0.22), rgba(255, 69, 58, 0.22));
+  mix-blend-mode: screen;
+  opacity: 0.45;
+  pointer-events: none;
+  animation: ink-iris 10s linear infinite;
+}
+
+#ink-orb-root.ink-armed #ink-orb::before {
+  opacity: 0.7;
+}
+
+@keyframes ink-iris {
+  to { transform: rotate(360deg); }
+}
+
+#ink-orb:hover {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1.07);
+}
+
+#ink-orb-root.ink-armed #ink-orb {
+  opacity: 1;
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.45),
+    inset 0 1px 1px rgba(255, 255, 255, 0.22),
+    inset 0 -6px 14px rgba(0, 0, 0, 0.45),
+    0 0 0 2.5px var(--orb-tint),
+    0 0 22px 2px var(--orb-tint);
+}
+
+#ink-orb-root.ink-armed #ink-orb::after {
+  content: "";
+  position: absolute;
+  inset: -7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--orb-tint);
+  opacity: 0.5;
+  animation: ink-breathe 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes ink-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.5; }
+  50%      { transform: scale(1.12); opacity: 0.12; }
+}
+
+#ink-orb-root.ink-dragging #ink-orb {
+  transform: translate(-50%, -50%) scale(1.14);
+  transition: none;
+}
+
+.ink-orb-glyph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-fg);
+}
+
+.ink-orb-glyph svg {
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+}
+
+/* orb fades while a stroke is in progress */
+body.ink-drawing #ink-orb-root:not(.ink-bloom-open) #ink-orb:not(:hover) {
+  opacity: 0.85;
+}
+
+/* ================= bloom petals ================= */
+
+.ink-bloom {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+}
+
+.ink-petal {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--ink-glass-border);
+  border-radius: 50%;
+  background:
+    linear-gradient(165deg,
+      rgba(255, 255, 255, 0.10) 0%,
+      rgba(255, 255, 255, 0.02) 40%,
+      rgba(0, 0, 0, 0.06) 100%),
+    var(--ink-glass);
+  backdrop-filter: blur(14px) saturate(1.5);
+  -webkit-backdrop-filter: blur(14px) saturate(1.5);
+  color: var(--ink-fg);
+  cursor: pointer;
+  padding: 0;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35),
+              inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  transform: translate(0, 0) scale(0.2);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 0.34s var(--ink-spring),
+    opacity 0.18s ease,
+    background 0.14s ease,
+    box-shadow 0.2s ease;
+  transition-delay: 0ms;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.ink-bloom-open .ink-petal {
+  transform: translate(var(--tx), var(--ty)) scale(1);
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: var(--d, 0ms);
+}
+
+/* closing: no stagger, quick collapse */
+#ink-orb-root:not(.ink-bloom-open) .ink-petal {
+  transition-duration: 0.18s;
+  transition-delay: 0ms;
+}
+
+.ink-petal svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+.ink-petal:hover {
+  background:
+    linear-gradient(165deg,
+      rgba(255, 255, 255, 0.14) 0%,
+      rgba(255, 255, 255, 0.04) 45%,
+      rgba(0, 0, 0, 0.05) 100%),
+    rgba(60, 60, 72, 0.9);
+  transform: translate(var(--tx), var(--ty)) scale(1.14);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5),
+              inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.ink-petal:active {
+  transform: translate(var(--tx), var(--ty)) scale(0.94);
+}
+
+.ink-petal:disabled {
+  color: var(--ink-fg-dim);
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* selected states */
+.ink-petal-tool.ink-on {
+  background: var(--orb-tint);
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35), 0 0 14px var(--orb-tint);
+}
+
+.ink-petal-color {
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  background: var(--swatch);
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
+}
+
+.ink-petal-color.ink-on {
+  box-shadow: 0 0 0 3px #fff, 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.ink-petal-custom {
+  display: flex;
+  overflow: hidden;
+  background:
+    conic-gradient(#ff453a, #ffd60a, #30d158, #64d2ff, #bf5af2, #ff453a);
+}
+
+.ink-petal-custom input {
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+.ink-petal-size {
+  width: 38px;
+  height: 38px;
+  margin: -19px 0 0 -19px;
+}
+
+.ink-petal-size .ink-dot {
+  width: var(--dot);
+  height: var(--dot);
+  border-radius: 50%;
+  background: var(--tint, #fff);
+}
+
+.ink-petal-size.ink-on {
+  box-shadow: 0 0 0 2.5px var(--tint, #fff), 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.ink-petal-shape.ink-on {
+  background: rgba(255, 255, 255, 0.2);
+  box-shadow: inset 0 0 0 1.5px var(--ink-accent),
+              0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+.ink-petal-exit {
+  color: #ff6b62;
+}
+
+/* hide the shape ring unless the shape tool is active */
+.ink-bloom:not(.ink-has-shapes) .ink-petal-shape {
+  display: none;
+}
+
+/* color/size rings dim for tools without style (eraser, laser) */
+.ink-bloom.ink-dim-style .ink-petal-color,
+.ink-bloom.ink-dim-style .ink-petal-size {
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+/* ================= overflow menu ================= */
+
+#ink-menu {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, calc(-100% - 210px)) scale(0.95);
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--ink-glass);
+  backdrop-filter: blur(18px) saturate(1.6);
+  -webkit-backdrop-filter: blur(18px) saturate(1.6);
+  border: 1px solid var(--ink-glass-border);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease, transform 0.2s var(--ink-spring);
+  z-index: 4;
+}
+
+#ink-menu.ink-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, calc(-100% - 220px)) scale(1);
+}
+
+.ink-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink-fg);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ink-menu-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.ink-check {
+  width: 14px;
+  color: var(--ink-accent);
+  font-weight: 700;
+}
+
+/* ================= toast ================= */
+
+#ink-toast {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translate(-50%, -8px);
+  z-index: 60;
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: var(--ink-glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--ink-glass-border);
+  color: var(--ink-fg);
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.25s var(--ink-spring);
+}
+
+#ink-toast.ink-show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* ================= tooltips ================= */
+
+.ink-petal[title]:hover::before {
+  content: attr(title);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  background: rgba(12, 12, 16, 0.95);
+  color: #eee;
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 6px 9px;
+  border-radius: 7px;
+  pointer-events: none;
+  z-index: 5;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+/* ================= touch devices ================= */
+
+@media (pointer: coarse) {
+  #ink-orb {
+    width: 64px;
+    height: 64px;
+    opacity: 0.85;
+  }
+  .ink-petal {
+    width: 50px;
+    height: 50px;
+    margin: -25px 0 0 -25px;
+  }
+  .ink-petal-color {
+    width: 40px;
+    height: 40px;
+    margin: -20px 0 0 -20px;
+  }
+  .ink-petal[title]:hover::before {
+    display: none;
+  }
+}
