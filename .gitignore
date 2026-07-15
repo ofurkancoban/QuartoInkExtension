@@ -1,0 +1,14 @@
+# rendered outputs (regenerate with quarto render)
+example.html
+example_files/
+tests/*.html
+tests/*_files/
+
+# injected test decks used during development (originals live elsewhere)
+07-dams.html
+Development-Economics-part-7.html
+
+# system / tooling
+.DS_Store
+.quarto/
+_build_smoke.py

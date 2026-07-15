@@ -18,17 +18,53 @@
   pointer-events: none;
 }
 
+/* deck chrome stays usable while drawing: lift reveal's navigation
+ * arrows and quarto's menu/chalkboard buttons above the ink canvas */
+body.ink-drawing .reveal .controls,
+body.ink-drawing .slide-menu-button,
+body.ink-drawing .slide-chalkboard-buttons {
+  z-index: 45 !important;
+}
+
 #ink-canvas.ink-hide-cursor { cursor: none; }
 body.ink-drawing #ink-canvas { cursor: crosshair; }
 body.ink-drawing #ink-canvas.ink-hide-cursor { cursor: none; }
 body.ink-drawing #ink-canvas.ink-text-cursor { cursor: text; }
 body.ink-drawing #ink-canvas.ink-move-cursor { cursor: move; }
+body.ink-drawing #ink-canvas.ink-link-cursor { cursor: pointer; }
+body.ink-drawing #ink-canvas.ink-zoom-cursor { cursor: zoom-in; }
+
+/* ================= magnifier lens ================= */
+
+#ink-lens {
+  display: none;
+  position: fixed;
+  z-index: 3999995;
+  width: 240px;
+  height: 240px;
+  margin: -120px 0 0 -120px;
+  border-radius: 50%;
+  border: 3px solid rgba(16, 17, 26, 0.9);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.45),
+    0 0 0 2px rgba(255, 255, 255, 0.65),
+    inset 0 0 18px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  background: #fff;
+  pointer-events: none;
+}
+
+#ink-lens canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
 
 /* ================= text editor ================= */
 
 .ink-text-editor {
   position: fixed;
-  z-index: 46;
+  z-index: 3999996;
   margin: 0;
   padding: 4px 6px;
   border: 1.5px dashed var(--ink-text-tint, #0a84ff);
@@ -55,7 +91,7 @@ body.ink-drawing #ink-canvas.ink-move-cursor { cursor: move; }
 /* corner controls of the text editor: move handle + font size */
 .ink-text-controls {
   position: fixed;
-  z-index: 47;
+  z-index: 3999997;
   display: flex;
   gap: 4px;
   padding: 4px;
@@ -211,15 +247,238 @@ body.ink-drawing #ink-canvas.ink-move-cursor { cursor: move; }
   pointer-events: none;
 }
 
+/* ================= selection handles ================= */
+
+.ink-sel-handle {
+  position: fixed;
+  z-index: 3999998;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 3px;
+  background: #fff;
+  border: 2px solid var(--ink-accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.ink-sel-handle[data-corner="1"],
+.ink-sel-handle[data-corner="3"] {
+  cursor: nesw-resize;
+}
+
+/* curved-arrow bend handle: round and tinted */
+.ink-sel-ctrl {
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: var(--ink-accent);
+  border: 2px solid #fff;
+  cursor: grab;
+}
+
+@media (pointer: coarse) {
+  .ink-sel-handle {
+    width: 18px;
+    height: 18px;
+    margin: -9px 0 0 -9px;
+  }
+}
+
+/* ================= session dialog ================= */
+
+#ink-session-dialog {
+  position: fixed;
+  top: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4000020;
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 300px;
+  max-width: 380px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(16, 17, 26, 0.96);
+  border: 1px solid var(--ink-glass-border);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink-fg);
+  animation: ink-text-in 0.18s var(--ink-spring);
+}
+
+.ink-session-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ink-session-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ink-session-item {
+  padding: 7px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07) !important;
+  color: var(--ink-fg) !important;
+  font-size: 12.5px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  box-shadow: none !important;
+}
+
+.ink-session-item.ink-on {
+  background: rgba(10, 132, 255, 0.35) !important;
+  border-color: rgba(88, 166, 255, 0.7) !important;
+}
+
+.ink-session-row {
+  display: flex;
+  gap: 6px;
+}
+
+.ink-session-input {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink-fg);
+  font-size: 13px;
+  outline: none;
+}
+
+.ink-session-new {
+  padding: 8px 12px;
+  border: none !important;
+  border-radius: 9px;
+  background: var(--ink-accent) !important;
+  color: #fff !important;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  box-shadow: none !important;
+  white-space: nowrap;
+}
+
+.ink-session-keep {
+  padding: 8px 10px;
+  border: none !important;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--ink-fg) !important;
+  font-size: 12.5px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  box-shadow: none !important;
+}
+
+.ink-session-keep:hover,
+.ink-session-item:hover {
+  background: rgba(255, 255, 255, 0.16) !important;
+}
+
+/* ================= whiteboard ================= */
+
+#ink-board {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 39; /* right under the ink canvas, above the deck */
+  background: #fdfdfc;
+}
+
+#ink-board.ink-board-bg-dots {
+  background:
+    radial-gradient(rgba(30, 41, 59, 0.13) 1.2px, transparent 1.3px)
+      0 0 / 26px 26px,
+    #fdfdfc;
+}
+
+#ink-board.ink-board-bg-grid {
+  background:
+    linear-gradient(rgba(30, 41, 59, 0.10) 1px, transparent 1px)
+      0 0 / 26px 26px,
+    linear-gradient(90deg, rgba(30, 41, 59, 0.10) 1px,
+      transparent 1px) 0 0 / 26px 26px,
+    #fdfdfc;
+}
+
+#ink-board.ink-board-bg-lines {
+  background:
+    linear-gradient(rgba(30, 41, 59, 0.12) 1px, transparent 1px)
+      0 10px / 100% 34px,
+    #fdfdfc;
+}
+
+body.ink-board-on #ink-board {
+  display: block;
+}
+
+#ink-board-bar {
+  display: none;
+  position: fixed;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  z-index: 3999997;
+  align-items: center;
+}
+
+body.ink-board-on #ink-board-bar {
+  display: flex;
+}
+
+/* page-delete button waiting for its confirming second tap */
+.ink-text-btn.ink-armed-danger {
+  background: rgba(244, 63, 94, 0.55) !important;
+  color: #fff !important;
+}
+
+.ink-board-label {
+  min-width: 52px;
+  text-align: center;
+  color: var(--ink-fg);
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  user-select: none;
+}
+
+/* ================= print (PDF) overlays ================= */
+
+.ink-print-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  z-index: 40;
+}
+
 /* ================= orb root ================= */
 
 #ink-orb-root {
   position: fixed;
-  z-index: 50;
+  z-index: 4000000;
   width: 0;
   height: 0;
   font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
   --orb-tint: #f43f5e;
+}
+
+/* hidden until draw mode is entered (D key or burger menu tool) */
+#ink-orb-root:not(.ink-shown) {
+  display: none;
 }
 
 /* ================= the orb ================= */
@@ -294,21 +553,8 @@ body.ink-drawing #ink-canvas.ink-move-cursor { cursor: move; }
     0 0 22px 2px var(--orb-tint);
 }
 
-#ink-orb-root.ink-armed #ink-orb::after {
-  content: "";
-  position: absolute;
-  inset: -7px;
-  border-radius: 50%;
-  border: 1.5px solid var(--orb-tint);
-  opacity: 0.5;
-  animation: ink-breathe 2.4s ease-in-out infinite;
-  pointer-events: none;
-}
-
-@keyframes ink-breathe {
-  0%, 100% { transform: scale(1); opacity: 0.5; }
-  50%      { transform: scale(1.12); opacity: 0.12; }
-}
+/* no extra outer effect: the armed orb is marked by its colored ring
+ * and the soft glow in its box-shadow alone */
 
 #ink-orb-root.ink-dragging #ink-orb {
   transform: translate(-50%, -50%) scale(1.14);
@@ -338,11 +584,13 @@ body.ink-drawing #ink-orb-root:not(.ink-bloom-open) #ink-orb:not(:hover) {
 
 /* ================= bloom petals ================= */
 
+/* above the orb (z 3) so petal tooltips are never covered by it;
+ * the layout keeps petals themselves clear of the orb */
 .ink-bloom {
   position: absolute;
   left: 0;
   top: 0;
-  z-index: 2;
+  z-index: 5;
 }
 
 .ink-petal {
@@ -372,12 +620,17 @@ body.ink-drawing #ink-orb-root:not(.ink-bloom-open) #ink-orb:not(:hover) {
               inset 0 1px 0 rgba(255, 255, 255, 0.10);
   transform: translate(0, 0) scale(0.2);
   opacity: 0;
+  /* visibility keeps collapsed petals truly gone: Chromium renders
+   * backdrop-filter even at opacity 0, which showed up as a blurred
+   * dot in the middle of the orb */
+  visibility: hidden;
   pointer-events: none;
   transition:
     transform 0.34s var(--ink-spring),
     opacity 0.18s ease,
     background 0.14s ease,
-    box-shadow 0.2s ease;
+    box-shadow 0.2s ease,
+    visibility 0s linear;
   transition-delay: 0ms;
   -webkit-tap-highlight-color: transparent;
 }
@@ -385,14 +638,16 @@ body.ink-drawing #ink-orb-root:not(.ink-bloom-open) #ink-orb:not(:hover) {
 .ink-bloom-open .ink-petal {
   transform: translate(var(--tx), var(--ty)) scale(1);
   opacity: 1;
+  visibility: visible;
   pointer-events: auto;
   transition-delay: var(--d, 0ms);
 }
 
-/* closing: no stagger, quick collapse */
+/* closing: no stagger, quick collapse; visibility flips only after
+ * the collapse animation has finished */
 #ink-orb-root:not(.ink-bloom-open) .ink-petal {
-  transition-duration: 0.18s;
-  transition-delay: 0ms;
+  transition-duration: 0.18s, 0.18s, 0.18s, 0.18s, 0s;
+  transition-delay: 0ms, 0ms, 0ms, 0ms, 0.2s;
 }
 
 .ink-petal svg {
@@ -401,7 +656,10 @@ body.ink-drawing #ink-orb-root:not(.ink-bloom-open) #ink-orb:not(:hover) {
   fill: currentColor;
 }
 
+/* lift the hovered petal above its siblings so its tooltip is
+ * never covered by neighbouring buttons */
 .ink-petal:hover {
+  z-index: 20;
   background:
     linear-gradient(165deg,
       rgba(255, 255, 255, 0.14) 0%,
@@ -502,7 +760,7 @@ body.ink-drawing #ink-orb-root:not(.ink-bloom-open) #ink-orb:not(:hover) {
   left: 0;
   top: 0;
   transform: translate(-50%, calc(-100% - 210px)) scale(0.95);
-  min-width: 200px;
+  min-width: 252px;
   display: flex;
   flex-direction: column;
   padding: 6px;
@@ -515,7 +773,7 @@ body.ink-drawing #ink-orb-root:not(.ink-bloom-open) #ink-orb:not(:hover) {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.14s ease, transform 0.2s var(--ink-spring);
-  z-index: 4;
+  z-index: 30;
 }
 
 #ink-menu.ink-visible {
@@ -542,6 +800,51 @@ body.ink-drawing #ink-orb-root:not(.ink-bloom-open) #ink-orb:not(:hover) {
   background: rgba(255, 255, 255, 0.1);
 }
 
+/* armed destructive item: waiting for the confirming second tap */
+.ink-menu-item.ink-menu-danger,
+.ink-menu-item.ink-menu-danger:hover {
+  background: rgba(244, 63, 94, 0.28);
+}
+
+.ink-menu-item.ink-menu-danger .ink-menu-label,
+.ink-menu-item.ink-menu-danger .ink-menu-ico {
+  color: #fb7185;
+}
+
+.ink-menu-head {
+  padding: 8px 12px 3px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-fg-dim);
+}
+
+.ink-menu-head:not(:first-child) {
+  margin-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+}
+
+.ink-menu-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-align: left;
+}
+
+.ink-menu-desc {
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--ink-fg-dim);
+}
+
+.ink-menu-item:hover .ink-menu-desc {
+  color: var(--ink-fg);
+  opacity: 0.75;
+}
+
 .ink-menu-ico {
   display: flex;
   align-items: center;
@@ -563,7 +866,8 @@ body.ink-drawing #ink-orb-root:not(.ink-bloom-open) #ink-orb:not(:hover) {
 }
 
 .ink-menu-label {
-  flex: 1;
+  font-weight: 600;
+  font-size: 13px;
 }
 
 .ink-check {
@@ -580,7 +884,7 @@ body.ink-drawing #ink-orb-root:not(.ink-bloom-open) #ink-orb:not(:hover) {
   top: 20px;
   left: 50%;
   transform: translate(-50%, -8px);
-  z-index: 60;
+  z-index: 4000010;
   padding: 9px 16px;
   border-radius: 999px;
   background: var(--ink-glass);
@@ -599,6 +903,12 @@ body.ink-drawing #ink-orb-root:not(.ink-bloom-open) #ink-orb:not(:hover) {
 #ink-toast.ink-show {
   opacity: 1;
   transform: translate(-50%, 0);
+}
+
+/* the whiteboard page bar occupies the top center: show toasts
+ * below it so they stay readable */
+body.ink-board-on #ink-toast {
+  top: 74px;
 }
 
 /* ================= tooltips ================= */

@@ -1,62 +1,56 @@
 # Ink
 
-A Quarto reveal.js extension that adds freehand annotation tools to your
-slides. Built for tablets and styluses: draw over your slides during a
-presentation with a pen, highlighter, eraser and laser pointer.
+Freehand annotation for Quarto reveal.js presentations. Draw over
+your slides during a talk with a pen, highlighter, shapes, text and
+sticky notes, magnify details, open a multi-page whiteboard, keep
+separate annotation sessions per class, and export everything (HTML,
+PDF, PNG) with the ink baked in. Built for tablets and styluses, but
+fully usable with a mouse, and works the same whether the deck is
+served from a web server (`quarto preview`, a hosted site) or opened
+from a rendered export (self-contained HTML, a static file).
 
-## Features
-
-- **Pen** with stylus pressure sensitivity
-- **Highlighter** with translucent wide strokes
-- **Shapes**: arrow, line, rectangle, ellipse with live preview. Tap
-  a finished shape with the shape tool to select it: a dashed box and
-  corner controls appear for moving, stroke width +/- and deleting,
-  and dragging the shape moves it — all undoable
-- **Text notes**: tap anywhere to type directly on the slide in a
-  floating editor that matches the final rendering, in a friendly
-  rounded annotation font; tap a note to re-edit it, drag it to move it
-  (works with the pen and shape tools too). Corner controls on the
-  editor offer move, font size +/- and delete — every edit, move,
-  resize and delete is undoable
-- **Eraser** that removes whole strokes it touches
-- **Laser pointer** for pointing without leaving marks
-- **The Ink Orb**: a single draggable, iridescent orb floats over the
-  deck. Tap it and a radial menu blooms open with staggered spring
-  animation — an inner ring of tools, a ring of colors (plus a custom
-  picker), a ring of stroke sizes, and a fourth ring of shape kinds
-  when the shape tool is active. The bloom always aims toward the
-  screen center and shifts itself to stay fully on screen.
-- **Per-tool memory**: pen, highlighter and shapes each remember their
-  own color and stroke width; the orb's glow ring shows the active color
-- **Undo / redo** (command based: erasing and clearing are undoable too,
-  with disabled button states), **clear slide / clear all / export PNG / export annotated HTML**
-  (a standalone copy of the deck with every slide's ink embedded)
-- **Smart snapping**: near-horizontal/45°/vertical lines and arrows snap
-  to exact angles, near-square rectangles become squares, and a straight
-  highlighter swipe is auto-straightened and leveled
-- **Two-finger tap to undo** on touch devices (Procreate-style gesture)
-- **Input smoothing** removes hand jitter from freehand strokes
-- **Fast rendering**: committed ink is cached offscreen, so drawing
-  stays responsive on stroke-heavy slides; the orb fades out of the
-  way while a stroke is in progress
-- **Palm rejection** toggle: accept only stylus input, ignore fingers
-- **Unobtrusive**: when idle the orb dims to a small glossy sphere;
-  toast hints confirm mode changes
-- **Per-slide drawings**: each slide keeps its own ink, restored when
-  you navigate back
-- **Persistence**: drawings are saved to localStorage and survive
-  page reloads
-- Touch-friendly: larger targets and no hover tooltips on tablets
+- Repository: https://github.com/ofurkancoban/QuartoInkExtension
+- Requires: Quarto 1.4+, `format: revealjs`
+- Version 0.9.0, MIT licensed (bundles html2canvas and jsPDF, both MIT)
 
 ## Installation
 
+### Option 1: quarto add (recommended)
+
+Run this in your presentation project's root directory:
+
 ```bash
-quarto add ofurkancoban/quarto-ink
+quarto add ofurkancoban/QuartoInkExtension
 ```
 
-## Usage
+This creates `_extensions/ink/` in your project. Commit that folder
+with your project so collaborators and CI get the extension too.
 
-Enable the plugin in your presentation:
+### Option 2: manual install
+
+Copy the extension folder into your project by hand:
+
+```bash
+git clone https://github.com/ofurkancoban/QuartoInkExtension
+mkdir -p your-project/_extensions
+cp -r QuartoInkExtension/_extensions/ink your-project/_extensions/
+```
+
+The folder must contain these five files:
+
+```
+_extensions/ink/
+├── _extension.yml
+├── ink.js
+├── ink.css
+├── html2canvas.min.js   (PNG/PDF export engine)
+└── jspdf.umd.min.js     (PDF writer)
+```
+
+### Enable the plugin
+
+For a single presentation, add `revealjs-plugins` to the YAML header
+of your `.qmd` file:
 
 ```yaml
 ---
@@ -67,29 +61,195 @@ revealjs-plugins:
 ---
 ```
 
-Open the presentation, tap the floating orb (or press **D**, or pick
-**Draw on Slides** from the burger menu's Tools panel) to enter draw
-mode, then draw directly on the slide with your finger, mouse or
-stylus. The shortcut is also listed in reveal's keyboard help (?).
+For every presentation in a project, put it in `_quarto.yml` instead:
 
-### Keyboard shortcuts
+```yaml
+format:
+  revealjs:
+    theme: default
+revealjs-plugins:
+  - ink
+```
 
-| Key | Action |
-|---|---|
-| D | Toggle draw mode |
-| P | Pen |
-| H | Highlighter |
-| T | Text |
-| S | Shapes |
-| E | Eraser |
-| L | Laser pointer |
-| Z | Undo |
-| Y | Redo |
+Then render and open the deck:
+
+```bash
+quarto render my-talk.qmd
+# or live preview with auto-reload:
+quarto preview my-talk.qmd
+```
+
+Press **D**: the Ink Orb appears and you can draw. Press **D** or
+**Esc** again and the whole UI disappears. This works identically
+whether the page is served over `http://localhost` by `quarto
+preview`, hosted on a real web server (including under a subpath,
+e.g. GitHub Pages project sites), or opened as a self-contained
+export (`embed-resources: true`) or a plain double-clicked HTML file.
+
+### Using with an already rendered HTML deck
+
+If you only have the rendered HTML and cannot re-render, inline the
+four asset files before the closing `</body>` tag and bootstrap the
+plugin manually:
+
+```html
+<style>   /* contents of ink.css */   </style>
+<script>  /* contents of html2canvas.min.js */ </script>
+<script>  /* contents of jspdf.umd.min.js */   </script>
+<script>  /* contents of ink.js */             </script>
+<script>
+(function () {
+  function go() {
+    if (window.Reveal && Reveal.isReady && Reveal.isReady()) {
+      window.InkAnnotate.init(Reveal);
+    } else { setTimeout(go, 200); }
+  }
+  if (document.readyState === "complete") go();
+  else window.addEventListener("load", go);
+})();
+</script>
+```
+
+Note: when inlining the JS files, replace any `</script` inside them
+with `<\/script`. Re-rendering with the plugin enabled is the
+recommended path.
+
+## Configuration (optional)
+
+All settings live under a top level `ink` key in the document or
+project metadata. Every key is optional; choices made in the UI are
+remembered in localStorage and win on later visits.
+
+```yaml
+---
+title: "My Talk"
+format: revealjs
+revealjs-plugins:
+  - ink
+ink:
+  colors: ["#e11d48", "#0ea5e9", "#22c55e", "#f59e0b", "#111827"]
+  default-tool: pen        # pen, highlighter, text, note, shape,
+                           # eraser, laser, zoom
+  board-background: grid   # dots, grid, lines, blank
+  pen-only: true           # start with palm rejection on
+  session: "Class A"       # open the deck in a named session
+  github: false            # hide the About entry in the menu
+---
+```
+
+## Features
+
+### Drawing tools
+
+- **Pen**: pressure sensitive, smoothed, tapered strokes
+- **Highlighter**: wide translucent strokes; straight swipes are
+  auto-straightened and leveled
+- **Text notes**: type directly on the slide in a floating editor
+  that matches the final rendering; tap to re-edit, drag to move
+- **Sticky notes**: text on a rounded colored card with automatic
+  readable text color
+- **Shapes**: arrow, curved arrow (with a bend handle), line,
+  rectangle, ellipse; live preview and smart angle/square snapping
+- **Eraser**: removes whole strokes, with a soft trailing wake
+- **Laser pointer**: bright dot with a smooth fading trail
+- **Magnifier**: hold to show a 2.2x circular lens that follows the
+  pointer, live ink included
+
+### Selection and editing
+
+- Tap any stroke with the shape tool to select it: dashed box,
+  corner resize handles, and a control bar (move, width +/-,
+  duplicate, delete)
+- Pasted slide images resize proportionally (aspect ratio locked)
+- Cmd/Ctrl+C copies the selected stroke, Cmd/Ctrl+V pastes a copy
+- Everything is undoable (Z / Y): draws, erases, moves, resizes,
+  text edits, deletions and clears
+
+### Whiteboard
+
+An opaque multi-page board over the deck, opened from the orb menu.
+The top bar has: previous/next page, new page, background switcher
+(dotted, squared, ruled, blank), a camera button that pastes a
+snapshot of the current slide onto the page as a movable image, a
+two-tap page delete, and close. Every page keeps its own ink and
+undo history; non-empty pages are appended to the PDF export.
+
+### Sessions
+
+Parallel annotation sets for the same deck, for example one per
+class group. When the deck opens with ink from an earlier day, a
+small prompt offers to start a fresh session; naming is optional and
+defaults to the date. Manage sessions any time from the menu.
+
+### Exports (the "..." menu)
+
+- **PNG**: current slide with its ink, as an image
+- **Annotated HTML**: a standalone single-file copy of the deck with
+  all drawings embedded (styles, scripts and images inlined)
+- **PDF**: one page per slide, tabset slides visited tab by tab,
+  whiteboard pages appended, with live progress
+- Plus: clear this slide / clear all (two-tap confirmation), pen-only
+  input toggle, session manager, GitHub link
+
+### The Ink Orb
+
+The whole UI is a single draggable orb, invisible until you press
+**D** (or pick "Draw on Slides" from the burger menu's Tools panel).
+Tapping it blooms a radial menu: tools, colors (plus a custom
+picker), stroke sizes, shape kinds, and undo/redo/whiteboard/menu/
+exit actions. The layout is collision-free and always stays on
+screen. Each tool remembers its own color and width.
+
+### Plays well with real decks
+
+- Per-tab ink layers on panel-tabset slides
+- Tab headers, map controls (Leaflet, Mapbox GL, MapLibre,
+  OpenLayers) and citation/footnote hover previews keep working
+  while a tool is selected
+- Reveal arrows and the Quarto menu stay clickable in draw mode;
+  overview and scroll view hide the ink safely
+- Third-party overlay widgets (progress indicators, laser pointers,
+  lightboxes) are handled: kept out of exports, never blocking the UI
+- The **D** shortcut is registered as early as the script loads and
+  reaches into same-origin embedded widgets (maps, charts), so it
+  still works even if a deck's own script tries to intercept keys
+  first, or focus is inside an embedded iframe
+- Committed ink is cached offscreen for fast redraws; drawings
+  persist in localStorage per slide, tab, board page and session
+
+## Keyboard shortcuts
+
+| Key           | Action                                |
+| ------------- | ------------------------------------- |
+| D             | Toggle draw mode                      |
+| P             | Pen                                   |
+| H             | Highlighter                           |
+| T             | Text                                  |
+| S             | Shapes                                |
+| E             | Eraser                                |
+| L             | Laser pointer                         |
+| Z             | Undo                                  |
+| Y             | Redo                                  |
+| Cmd/Ctrl+C, V | Copy and paste the selected stroke    |
+| Esc           | Close whiteboard, then exit draw mode |
+
+Two-finger tap undoes on touch screens. The D shortcut is listed in
+reveal's keyboard help (?) and the burger menu's Tools panel gets a
+"Draw on Slides" entry.
 
 ## Development
 
-- `example.qmd` is a demo deck: `quarto render example.qmd`
-- `tests/logic.qmd` is a self-checking test deck that simulates pointer
-  input and reports PASS/FAIL for drawing, undo/redo, eraser,
-  persistence and per-slide isolation
-- `tests/autodraw.qmd` draws synthetic strokes for visual inspection
+```bash
+quarto render example.qmd        # demo deck
+quarto render tests/logic.qmd    # self-checking suite, 104 checks
+quarto render tests/layout.qmd   # radial menu layout proofs, 24 checks
+```
+
+Open the rendered test decks in a browser; results are printed on
+the first slide as PASS/FAIL lines. `tests/autodraw.qmd` draws
+synthetic strokes for visual inspection.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Bundles html2canvas 1.4.1 (MIT) and
+jsPDF 2.5.1 (MIT) for the PNG/PDF exports.

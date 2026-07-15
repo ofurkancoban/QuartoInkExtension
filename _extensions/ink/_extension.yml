@@ -1,9 +1,14 @@
 title: Ink
 author: ofurkancoban
-version: 0.3.0
+version: 0.9.0
 quarto-required: ">=1.4.0"
 contributes:
   revealjs-plugins:
     - name: InkAnnotate
-      script: ink.js
+      script:
+        - html2canvas.min.js
+        - jspdf.umd.min.js
+        - ink.js
       stylesheet: ink.css
+      config:
+        ink: {}

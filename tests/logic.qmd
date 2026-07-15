@@ -3,6 +3,9 @@ title: "Ink Logic Test"
 format:
   revealjs:
     theme: default
+ink:
+  board-background: grid
+  default-tool: highlighter
 revealjs-plugins:
   - ink
 ---
@@ -15,8 +18,27 @@ Running...
 
 ## Slide two
 
+## Tabs
+
+::: {.panel-tabset}
+
+### Alpha
+
+Content of tab alpha.
+
+### Beta
+
+Content of tab beta.
+
+:::
+
 ```{=html}
 <script>
+window.addEventListener("error", function (e) {
+  document.getElementById("results").innerHTML =
+    "<pre>SCRIPT ERROR: " + e.message + " @ line " + e.lineno + "</pre>";
+  document.title = "ink-tests-error";
+});
 window.addEventListener("load", function () {
   setTimeout(function () {
     var out = [];
@@ -29,7 +51,22 @@ window.addEventListener("load", function () {
     Object.keys(api.getStrokes()).forEach(function (k) {
       delete api.getStrokes()[k];
     });
+    // the orb must be invisible before draw mode is ever entered
+    var orbRoot = document.getElementById("ink-orb-root");
+    check("orb hidden on first load",
+      getComputedStyle(orbRoot).display === "none");
     api.setDrawMode(true);
+    check("orb appears in draw mode",
+      getComputedStyle(orbRoot).display !== "none");
+    api.setDrawMode(false);
+    check("orb hides again on exit",
+      getComputedStyle(orbRoot).display === "none");
+    api.setDrawMode(true);
+    // yaml configuration reached the plugin
+    check("yaml default tool applied", api.getTool() === "highlighter");
+    check("yaml board background applied",
+      document.getElementById("ink-board").className ===
+      "ink-board-bg-grid");
     function ev(type, x, y) {
       canvas.dispatchEvent(new PointerEvent(type, {
         clientX: x, clientY: y, pointerId: 1, pointerType: "mouse",
@@ -79,7 +116,8 @@ window.addEventListener("load", function () {
     var last = api.getStrokes()["0.0"][1];
     check("shape recorded as rect",
       last.tool === "shape" && last.shape === "rect");
-    var autoBar = document.querySelector(".ink-sel-controls");
+    var autoBar = document.querySelector(
+      ".ink-sel-controls:not(#ink-board-bar):not(.ink-ed-controls)");
     check("new shape is auto-selected",
       !!autoBar && autoBar.style.display !== "none");
     // tapping the interior of a rect selects it too
@@ -217,11 +255,29 @@ window.addEventListener("load", function () {
     ev("pointerup", nsx, nsy);
     check("pen tap on note draws nothing", count() === penTap);
 
+    // sticky note: colored card behind the text
+    api.setTool("note");
+    ev("pointerdown", 640, 620);
+    ev("pointerup", 640, 620);
+    var sta = document.querySelector(".ink-text-editor");
+    check("note editor opens with card styling",
+      !!sta && sta.classList.contains("ink-sticky-editor"));
+    sta.value = "sticky!";
+    api.commitTextEditor();
+    var stick = api.getStrokes()["0.0"].slice(-1)[0];
+    check("sticky note committed with flag",
+      stick && stick.tool === "text" && stick.sticky === true);
+    api.undo();
+    check("sticky note undoable",
+      api.getStrokes()["0.0"].indexOf(stick) < 0);
+    api.redo();
+
     // shape selection: tap shows controls, drag moves, trash deletes
     api.setTool("shape");
     ev("pointerdown", 700, 300);
     ev("pointerup", 700, 300);
-    var sbar = document.querySelector(".ink-sel-controls");
+    var sbar = document.querySelector(
+      ".ink-sel-controls:not(#ink-board-bar):not(.ink-ed-controls)");
     check("shape tap shows controls",
       !!sbar && sbar.style.display !== "none");
     var sqBefore = sq.points[0].slice();
@@ -242,6 +298,91 @@ window.addEventListener("load", function () {
     check("controls hide after delete", sbar.style.display === "none");
     api.undo();
     check("undo restores trashed shape", count() === scount);
+
+    // duplicate: button and clipboard shortcuts
+    ev("pointerdown", 700, 300);
+    ev("pointerup", 700, 300); // select the square again
+    var dupBefore = count();
+    api.duplicateSelected();
+    check("duplicate adds an offset copy", count() === dupBefore + 1);
+    var dup = api.getStrokes()["0.0"].slice(-1)[0];
+    check("copy is offset from the original",
+      Math.abs(dup.points[0][0] - sq.points[0][0] - 16) < 0.01);
+    api.undo();
+    check("duplicate is undoable", count() === dupBefore);
+    ev("pointerdown", 700, 300);
+    ev("pointerup", 700, 300);
+    document.dispatchEvent(new KeyboardEvent("keydown",
+      { key: "c", metaKey: true, bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown",
+      { key: "v", metaKey: true, bubbles: true }));
+    check("cmd+c / cmd+v pastes a copy", count() === dupBefore + 1);
+    api.undo();
+
+    // pen strokes are selectable and movable with the shape tool
+    api.setTool("shape");
+    var penStroke = api.getStrokes()["0.0"][0];
+    var pp = penStroke.points[0].slice();
+    var psx = rect.left + penStroke.points[3][0] * scale;
+    var psy = rect.top + penStroke.points[3][1] * scale;
+    ev("pointerdown", psx, psy);
+    ev("pointermove", psx + 40, psy + 20);
+    ev("pointerup", psx + 40, psy + 20);
+    check("pen stroke drag moves it",
+      Math.abs(penStroke.points[0][0] - pp[0] - 40 / scale) < 1);
+    api.undo();
+    check("undo restores pen stroke",
+      Math.abs(penStroke.points[0][0] - pp[0]) < 0.01);
+
+    // corner handles resize the selected shape
+    ev("pointerdown", 700, 300);
+    ev("pointerup", 700, 300);
+    var hb = document.querySelector(".ink-sel-handle[data-corner='2']");
+    check("selection shows corner handles",
+      !!hb && hb.style.display !== "none");
+    var hr = hb.getBoundingClientRect();
+    var hx = hr.left + 6, hy = hr.top + 6;
+    var w0 = Math.abs(sq.points[1][0] - sq.points[0][0]);
+    hb.dispatchEvent(new PointerEvent("pointerdown",
+      { bubbles: true, pointerId: 31, clientX: hx, clientY: hy }));
+    hb.dispatchEvent(new PointerEvent("pointermove",
+      { bubbles: true, pointerId: 31,
+        clientX: hx + 50, clientY: hy + 30 }));
+    hb.dispatchEvent(new PointerEvent("pointerup",
+      { bubbles: true, pointerId: 31,
+        clientX: hx + 50, clientY: hy + 30 }));
+    var w1 = Math.abs(sq.points[1][0] - sq.points[0][0]);
+    check("corner handle resizes shape", w1 > w0 + 30 / scale);
+    api.undo();
+    check("undo restores shape size",
+      Math.abs(Math.abs(sq.points[1][0] - sq.points[0][0]) - w0) < 0.01);
+
+    // curved arrow: 3 points and a draggable bend handle
+    api.setShape("curve");
+    stroke(250, 620, 550, 620);
+    var cv = api.getStrokes()["0.0"].slice(-1)[0];
+    check("curved arrow recorded",
+      cv.shape === "curve" && cv.points.length === 3);
+    var ch = document.querySelector(".ink-sel-ctrl");
+    check("curve shows bend handle",
+      !!ch && ch.style.display !== "none");
+    var cr = ch.getBoundingClientRect();
+    var cx0 = cr.left + 7, cy0 = cr.top + 7;
+    var ctrlBefore = cv.points[1].slice();
+    ch.dispatchEvent(new PointerEvent("pointerdown",
+      { bubbles: true, pointerId: 32, clientX: cx0, clientY: cy0 }));
+    ch.dispatchEvent(new PointerEvent("pointermove",
+      { bubbles: true, pointerId: 32,
+        clientX: cx0, clientY: cy0 - 60 }));
+    ch.dispatchEvent(new PointerEvent("pointerup",
+      { bubbles: true, pointerId: 32,
+        clientX: cx0, clientY: cy0 - 60 }));
+    check("bend handle reshapes curve",
+      Math.abs(cv.points[1][1] - (ctrlBefore[1] - 60 / scale)) < 1);
+    api.undo();
+    check("undo restores curve control",
+      Math.abs(cv.points[1][1] - ctrlBefore[1]) < 0.01);
+    api.setTool("pen"); // deselect before the remaining tests
 
     // eraser removes text notes by bounding box
     var beforeErase = count();
@@ -287,7 +428,7 @@ window.addEventListener("load", function () {
     // more menu: every item carries an icon
     check("menu items have icons",
       document.querySelectorAll(
-        "#ink-menu .ink-menu-item .ink-menu-ico svg").length === 5);
+        "#ink-menu .ink-menu-item .ink-menu-ico svg").length === 8);
 
     // annotated html export embeds the strokes as a seed
     var captured = null;
@@ -330,6 +471,222 @@ window.addEventListener("load", function () {
       check("undo is per slide",
         (api.getStrokes()["1.0"] || []).length === 0 &&
         (api.getStrokes()["0.0"] || []).length === slide1Count);
+      // ---- per-tab drawings on the tabset slide ----
+      var tabsSection = document.getElementById("tabs");
+      var tIdx = Reveal.getIndices(tabsSection);
+      var tBase = tIdx.h + "." + (tIdx.v || 0) + "|t";
+      Reveal.slide(tIdx.h, tIdx.v || 0);
+      setTimeout(function () {
+        api.setTool("pen");
+        stroke(300, 450, 450, 450);
+        var keysA = Object.keys(api.getStrokes())
+          .filter(function (k) { return k.indexOf(tBase) === 0; });
+        check("tabbed slide uses tab-scoped key", keysA.length === 1);
+        var keyA = keysA[0];
+        var tabB = tabsSection.querySelectorAll(
+          ".panel-tabset ul > li > a")[1];
+        // tap the tab header through the canvas: switches, no draw
+        var tr = tabB.getBoundingClientRect();
+        ev("pointerdown", tr.left + tr.width / 2,
+           tr.top + tr.height / 2);
+        ev("pointerup", tr.left + tr.width / 2,
+           tr.top + tr.height / 2);
+        setTimeout(function () {
+          check("tab header tap switches tab",
+            tabB.getAttribute("aria-selected") === "true" ||
+            tabB.classList.contains("active"));
+          stroke(300, 480, 450, 480);
+          var keysB = Object.keys(api.getStrokes())
+            .filter(function (k) { return k.indexOf(tBase) === 0; });
+          check("second tab gets its own layer",
+            keysB.length === 2);
+          check("first tab layer untouched",
+            api.getStrokes()[keyA].length === 1);
+          api.undo();
+          var keyB = keysB.filter(function (k) {
+            return k !== keyA;
+          })[0];
+          check("undo is per tab",
+            api.getStrokes()[keyB].length === 0 &&
+            api.getStrokes()[keyA].length === 1);
+          // ---- whiteboard: own multi-page ink, isolated from slides ----
+          var slideCount = (api.getStrokes()[keyA] || []).length;
+          api.toggleBoard(true);
+          check("board surface opens",
+            document.body.classList.contains("ink-board-on"));
+          stroke(300, 300, 500, 300);
+          check("board stroke keyed to board.0",
+            (api.getStrokes()["board.0"] || []).length === 1);
+          api.addBoardPage();
+          stroke(300, 340, 500, 340);
+          check("second board page isolated",
+            (api.getStrokes()["board.1"] || []).length === 1 &&
+            (api.getStrokes()["board.0"] || []).length === 1);
+          api.undo();
+          check("undo is per board page",
+            (api.getStrokes()["board.1"] || []).length === 0 &&
+            (api.getStrokes()["board.0"] || []).length === 1);
+          // page deletion: shift pages down, last page just clears
+          stroke(300, 360, 420, 360); // one stroke on page 2
+          api.setBoardPage(0);
+          api.deleteBoardPage();
+          var bst = api.boardState();
+          check("page delete shifts later pages down",
+            bst.pages === 1 && bst.page === 0 &&
+            (api.getStrokes()["board.0"] || []).length === 1 &&
+            !api.getStrokes()["board.1"]);
+          api.deleteBoardPage();
+          check("deleting the last page clears it",
+            api.boardState().pages === 1 &&
+            (api.getStrokes()["board.0"] || []).length === 0);
+
+          api.setBoardBackground("grid");
+          check("board background switches",
+            document.getElementById("ink-board").className ===
+            "ink-board-bg-grid");
+          api.setBoardBackground("dots");
+          var boardCount = (api.getStrokes()["board." +
+            api.boardState().page] || []).length;
+          api.captureSlideToBoard();
+          setTimeout(function () {
+            var bkey = "board." + api.boardState().page;
+            var blist = api.getStrokes()[bkey] || [];
+            var img = blist[blist.length - 1];
+            check("slide snapshot pasted onto board",
+              blist.length === boardCount + 1 &&
+              img.tool === "image" &&
+              typeof img.src === "string" &&
+              img.src.indexOf("data:image/jpeg") === 0 &&
+              img.points.length === 2);
+            // resizing a pasted slide keeps its aspect ratio
+            var ratio0 = (img.points[1][0] - img.points[0][0]) /
+                         (img.points[1][1] - img.points[0][1]);
+            var ihb = document.querySelector(
+              ".ink-sel-handle[data-corner='2']");
+            var ihr = ihb.getBoundingClientRect();
+            var ihx = ihr.left + 6, ihy = ihr.top + 6;
+            ihb.dispatchEvent(new PointerEvent("pointerdown",
+              { bubbles: true, pointerId: 41,
+                clientX: ihx, clientY: ihy }));
+            ihb.dispatchEvent(new PointerEvent("pointermove",
+              { bubbles: true, pointerId: 41,
+                clientX: ihx + 70, clientY: ihy + 10 }));
+            ihb.dispatchEvent(new PointerEvent("pointerup",
+              { bubbles: true, pointerId: 41,
+                clientX: ihx + 70, clientY: ihy + 10 }));
+            var ratio1 = (img.points[1][0] - img.points[0][0]) /
+                         (img.points[1][1] - img.points[0][1]);
+            check("image resize keeps aspect ratio",
+              Math.abs(ratio1 - ratio0) < 0.02);
+            api.undo(); // undo the resize
+            api.undo(); // undo the paste
+            check("snapshot is undoable",
+              (api.getStrokes()[bkey] || []).length === boardCount);
+            afterSnap();
+          }, 3000);
+
+          function afterSnap() {
+          api.toggleBoard(false);
+          check("board closes back to slides",
+            !document.body.classList.contains("ink-board-on") &&
+            (api.getStrokes()[keyA] || []).length === slideCount);
+
+          // ---- clear confirmation: two taps instead of a popup ----
+          api.setTool("pen");
+          stroke(320, 500, 420, 500);
+          var clearBtn = document.querySelector(
+            "[data-ink-menu='clear']");
+          var beforeClear = (api.getStrokes()[keyB] || []).length;
+          clearBtn.click();
+          check("clear arms on first tap",
+            clearBtn.classList.contains("ink-menu-danger") &&
+            (api.getStrokes()[keyB] || []).length === beforeClear);
+          clearBtn.click();
+          check("second tap clears the slide",
+            (api.getStrokes()[keyB] || []).length === 0);
+          api.undo();
+          check("clear is undoable",
+            (api.getStrokes()[keyB] || []).length === beforeClear);
+          clearBtn.click(); // re-arm and let it time out
+          check("armed state shows danger styling",
+            clearBtn.classList.contains("ink-menu-danger"));
+          setTimeout(function () {
+            check("arming times out safely",
+              !clearBtn.classList.contains("ink-menu-danger") &&
+              (api.getStrokes()[keyB] || []).length === beforeClear);
+
+            // ---- magnifier: hold shows the lens, release hides ----
+            api.setTool("zoom");
+            ev("pointerdown", 500, 400);
+            setTimeout(function () {
+              var lensEl = document.getElementById("ink-lens");
+              check("magnifier lens appears while held",
+                !!lensEl && lensEl.style.display === "block");
+              ev("pointermove", 560, 420);
+              check("lens follows the pointer",
+                lensEl.style.left === "560px");
+              ev("pointerup", 560, 420);
+              check("lens hides on release",
+                lensEl.style.display === "none");
+              api.setTool("pen");
+              afterLens();
+            }, 2500);
+
+            function afterLens() {
+            // ---- named sessions: isolated ink + optional day prompt ----
+            var baseKeys = Object.keys(api.getStrokes()).filter(
+              function (k) { return api.getStrokes()[k].length > 0; });
+            api.newSession("TestB");
+            check("new session starts clean",
+              api.sessionState().active === "TestB" &&
+              Object.keys(api.getStrokes()).every(function (k) {
+                return api.getStrokes()[k].length === 0;
+              }));
+            api.setTool("pen");
+            stroke(220, 300, 340, 300);
+            check("session ink is isolated",
+              Object.keys(api.getStrokes()).some(function (k) {
+                return api.getStrokes()[k].length > 0;
+              }));
+            api.switchSession("");
+            var backKeys = Object.keys(api.getStrokes()).filter(
+              function (k) { return api.getStrokes()[k].length > 0; });
+            check("default session intact",
+              backKeys.length === baseKeys.length);
+            // simulate ink from an earlier day: the prompt appears
+            localStorage.setItem(api.storageKey() + ":ts",
+              String(Date.now() - 2 * 86400000));
+            api.checkSessionPrompt();
+            var sdlg = document.getElementById("ink-session-dialog");
+            check("day-change prompt appears",
+              !!sdlg && sdlg.style.display !== "none");
+            sdlg.querySelector("[data-ink-keep]").click();
+            check("prompt can be dismissed",
+              sdlg.style.display === "none");
+
+            // png export renders the slide itself, not just the ink
+            var pngHref = null;
+            var oc2 = HTMLAnchorElement.prototype.click;
+            HTMLAnchorElement.prototype.click = function () {
+              if (String(this.href).indexOf("data:image/png") === 0) {
+                pngHref = this.href;
+              }
+            };
+            api.exportPng();
+            setTimeout(function () {
+              HTMLAnchorElement.prototype.click = oc2;
+              check("png export captures the slide",
+                !!pngHref && pngHref.length > 20000);
+              finish();
+            }, 1800);
+            }
+          }, 3000);
+          } // end afterSnap
+        }, 400);
+      }, 600);
+
+      function finish() {
+      Reveal.left();
       Reveal.left();
       setTimeout(function () {
         document.getElementById("results").innerHTML =
@@ -338,6 +695,7 @@ window.addEventListener("load", function () {
           (out.every(function (l) { return l.indexOf("PASS") === 0; })
             ? "allpass" : "failed");
       }, 300);
+      }
     }, 600);
   }, 1500);
 });

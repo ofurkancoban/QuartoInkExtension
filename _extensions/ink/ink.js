@@ -49,7 +49,8 @@ window.InkAnnotate = (function () {
     pen:         { color: COLORS[0], size: 4 },
     highlighter: { color: COLORS[2], size: 7 },
     shape:       { color: COLORS[5], size: 3, kind: "arrow" },
-    text:        { color: COLORS[0], size: 7 }
+    text:        { color: COLORS[0], size: 7 },
+    note:        { color: COLORS[2], size: 7 }
   };
 
   var strokes = {};
@@ -60,7 +61,32 @@ window.InkAnnotate = (function () {
   var LASER_LIFE = 700;
   var ERASER_LIFE = 450;
 
-  var docKey = "quarto-ink:" + STORE_VERSION + ":" + location.pathname;
+  var inkShowGithub = true;
+
+  /* ---- named sessions: parallel annotation sets per deck ---- */
+  var docBase = "quarto-ink:" + STORE_VERSION + ":" + location.pathname;
+  var session = "";           // "" = the default session
+  try { session = localStorage.getItem(docBase + ":session") || ""; }
+  catch (e) { /* ignore */ }
+
+  function docKey() {
+    return docBase +
+      (session ? ":s:" + encodeURIComponent(session) : "");
+  }
+
+  function sessionList() {
+    try {
+      return JSON.parse(
+        localStorage.getItem(docBase + ":sessions")) || [];
+    } catch (e) { return []; }
+  }
+
+  function saveSessionList(list) {
+    try {
+      localStorage.setItem(docBase + ":sessions",
+        JSON.stringify(list));
+    } catch (e) { /* ignore */ }
+  }
   var settingsKey = "quarto-ink-settings:v2";
 
   /* ================= storage ================= */
@@ -72,25 +98,47 @@ window.InkAnnotate = (function () {
 
   function persist() {
     try {
-      localStorage.setItem(docKey, JSON.stringify(strokes, stripPrivate));
+      localStorage.setItem(docKey(),
+        JSON.stringify(strokes, stripPrivate));
+      localStorage.setItem(docKey() + ":ts", String(Date.now()));
     } catch (e) { /* private mode or full: keep in memory */ }
   }
 
   function restore() {
+    var local = null;
     try {
-      strokes = JSON.parse(localStorage.getItem(docKey)) || null;
-    } catch (e) { strokes = null; }
-    if (!strokes) {
-      // an exported deck carries its drawings as an embedded seed
-      strokes = window.InkAnnotateSeed
-        ? JSON.parse(JSON.stringify(window.InkAnnotateSeed)) : {};
+      local = JSON.parse(localStorage.getItem(docKey())) || null;
+    } catch (e) { local = null; }
+
+    /* An exported deck carries its drawings as an embedded seed.
+     * Each export has a unique id: the first time this particular
+     * export is opened its seed wins over any stale localStorage
+     * left by earlier files at the same path; afterwards edits made
+     * in the file take precedence again. */
+    var seed = window.InkAnnotateSeed;
+    if (seed) {
+      var seedStrokes = seed.strokes || seed; // also old seed format
+      var seedId = String(seed.id || "legacy");
+      var imported = null;
+      try { imported = localStorage.getItem(docKey() + ":seed"); }
+      catch (e) { /* ignore */ }
+      if (imported !== seedId || !local) {
+        strokes = JSON.parse(JSON.stringify(seedStrokes));
+        try { localStorage.setItem(docKey() + ":seed", seedId); }
+        catch (e) { /* ignore */ }
+        persist();
+        return;
+      }
     }
+    strokes = local || {};
   }
 
   function saveSettings() {
     try {
       localStorage.setItem(settingsKey, JSON.stringify({
-        toolCfg: toolCfg, penOnly: penOnly
+        toolCfg: toolCfg, penOnly: penOnly,
+        boardPages: boardPages, boardPage: boardPage,
+        boardBg: boardBg
       }));
     } catch (e) { /* ignore */ }
   }
@@ -105,6 +153,11 @@ window.InkAnnotate = (function () {
           }
         });
         penOnly = !!s.penOnly;
+        if (s.boardPages >= 1) boardPages = s.boardPages;
+        if (s.boardPage >= 0 && s.boardPage < boardPages) {
+          boardPage = s.boardPage;
+        }
+        if (BOARD_BGS.indexOf(s.boardBg) >= 0) boardBg = s.boardBg;
       }
     } catch (e) { /* ignore */ }
   }
@@ -113,9 +166,70 @@ window.InkAnnotate = (function () {
     return toolCfg[tool] || toolCfg.pen;
   }
 
+  /* ================= whiteboard ================= */
+
+  /* The whiteboard is an opaque surface over the deck with its own
+   * multi-page ink, independent of slides. Every tool works on it;
+   * its strokes live under "board.<page>" keys, so undo history and
+   * persistence come for free. */
+
+  var boardOn = false;
+  var boardPage = 0;
+  var boardPages = 1;
+  var boardEl = null, boardBar = null, boardLabel = null;
+  var BOARD_BGS = ["dots", "grid", "lines", "blank"];
+  var BOARD_BG_NAMES = {
+    dots: "Dotted", grid: "Squared", lines: "Ruled", blank: "Blank"
+  };
+  var boardBg = "dots";
+
+  function applyBoardBg() {
+    if (!boardEl) return;
+    boardEl.className = "ink-board-bg-" + boardBg;
+  }
+
+  function setBoardBackground(bg) {
+    if (BOARD_BGS.indexOf(bg) < 0) return;
+    boardBg = bg;
+    invalidateLens();
+    applyBoardBg();
+    saveSettings();
+  }
+
+  function cycleBoardBg() {
+    var i = (BOARD_BGS.indexOf(boardBg) + 1) % BOARD_BGS.length;
+    setBoardBackground(BOARD_BGS[i]);
+    showToast("Background: " + BOARD_BG_NAMES[boardBg]);
+  }
+
+  /* Drawings are keyed per slide; on slides with panel-tabsets the
+   * active tab combination extends the key, so every tab keeps its
+   * own ink and undo history. Slides without tabsets keep the plain
+   * "h.v" key (backwards compatible with stored drawings). While the
+   * whiteboard is open, its page key takes over entirely. */
   function slideKey() {
+    if (boardOn) return "board." + boardPage;
     var idx = deck.getIndices();
-    return idx.h + "." + (idx.v || 0);
+    var key = idx.h + "." + (idx.v || 0);
+    var slide = deck.getCurrentSlide && deck.getCurrentSlide();
+    if (slide) {
+      var sets = slide.querySelectorAll(".panel-tabset");
+      if (sets.length > 0) {
+        var t = [];
+        sets.forEach(function (ts) {
+          var tabs = ts.querySelectorAll(
+            "ul [role='tab'], ul .nav-link, ul > li > a");
+          var act = 0;
+          tabs.forEach(function (tb, i) {
+            if (tb.getAttribute("aria-selected") === "true" ||
+                tb.classList.contains("active")) act = i;
+          });
+          t.push(act);
+        });
+        key += "|t" + t.join(".");
+      }
+    }
+    return key;
   }
 
   function slideStrokes() {
@@ -152,6 +266,7 @@ window.InkAnnotate = (function () {
     canvas.style.width = window.innerWidth + "px";
     canvas.style.height = window.innerHeight + "px";
     invalidate();
+    invalidateLens();
     redraw();
     if (textEditor) placeEditor();
     positionSelBar();
@@ -242,6 +357,23 @@ window.InkAnnotate = (function () {
     ctx.stroke();
   }
 
+  function curveCtrl(s) {
+    // control point of a curved arrow (middle entry of 3 points)
+    return s.points.length > 2 ? s.points[1] :
+      [(s.points[0][0] + s.points[s.points.length - 1][0]) / 2,
+       (s.points[0][1] + s.points[s.points.length - 1][1]) / 2];
+  }
+
+  function drawArrowHead(tip, ang, size) {
+    var len = Math.max(10, size * 3.5);
+    ctx.moveTo(tip[0], tip[1]);
+    ctx.lineTo(tip[0] - len * Math.cos(ang - 0.45),
+               tip[1] - len * Math.sin(ang - 0.45));
+    ctx.moveTo(tip[0], tip[1]);
+    ctx.lineTo(tip[0] - len * Math.cos(ang + 0.45),
+               tip[1] - len * Math.sin(ang + 0.45));
+  }
+
   function drawShape(s) {
     var a = s.points[0];
     var b = s.points[s.points.length - 1];
@@ -250,15 +382,15 @@ window.InkAnnotate = (function () {
       ctx.moveTo(a[0], a[1]);
       ctx.lineTo(b[0], b[1]);
       if (s.shape === "arrow") {
-        var ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
-        var len = Math.max(10, s.size * 3.5);
-        ctx.moveTo(b[0], b[1]);
-        ctx.lineTo(b[0] - len * Math.cos(ang - 0.45),
-                   b[1] - len * Math.sin(ang - 0.45));
-        ctx.moveTo(b[0], b[1]);
-        ctx.lineTo(b[0] - len * Math.cos(ang + 0.45),
-                   b[1] - len * Math.sin(ang + 0.45));
+        drawArrowHead(b,
+          Math.atan2(b[1] - a[1], b[0] - a[0]), s.size);
       }
+    } else if (s.shape === "curve") {
+      var cc = curveCtrl(s);
+      ctx.moveTo(a[0], a[1]);
+      ctx.quadraticCurveTo(cc[0], cc[1], b[0], b[1]);
+      drawArrowHead(b,
+        Math.atan2(b[1] - cc[1], b[0] - cc[0]), s.size);
     } else if (s.shape === "rect") {
       ctx.rect(Math.min(a[0], b[0]), Math.min(a[1], b[1]),
                Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
@@ -287,21 +419,52 @@ window.InkAnnotate = (function () {
     return TEXT_FONT.replace("%", String(fontPx(size) * (scale || 1)));
   }
 
+  /* readable text color for a colored card background */
+  function darkText(hex) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+    if (!m) return "#1e293b";
+    var n = parseInt(m[1], 16);
+    var lum = (0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) +
+               0.114 * (n & 255)) / 255;
+    return lum > 0.55 ? "#1e293b" : "#ffffff";
+  }
+
   function drawText(s) {
     if (!s.text) return;
     var px = fontPx(s.size);
     var lh = Math.round(px * 1.3);
     ctx.font = textFont(s.size);
     ctx.textBaseline = "top";
-    ctx.fillStyle = s.color;
     var lines = s.text.split("\n");
     var w = 0;
-    for (var i = 0; i < lines.length; i++) {
-      ctx.fillText(lines[i], s.points[0][0], s.points[0][1] + i * lh);
-      w = Math.max(w, ctx.measureText(lines[i]).width);
+    for (var m = 0; m < lines.length; m++) {
+      w = Math.max(w, ctx.measureText(lines[m]).width);
     }
     s._w = w;
     s._h = lines.length * lh;
+    if (s.sticky) {
+      // sticky note: rounded colored card behind the text
+      var pad = px * 0.55;
+      var x = s.points[0][0] - pad, y = s.points[0][1] - pad;
+      var bw = w + pad * 2, bh = s._h + pad * 2;
+      var r = Math.min(10, pad);
+      ctx.save();
+      ctx.shadowColor = "rgba(15, 23, 42, 0.28)";
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetY = 3;
+      ctx.fillStyle = s.color;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x, y, bw, bh, r);
+      else ctx.rect(x, y, bw, bh);
+      ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = darkText(s.color);
+    } else {
+      ctx.fillStyle = s.color;
+    }
+    for (var i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], s.points[0][0], s.points[0][1] + i * lh);
+    }
   }
 
   function textBox(s) {
@@ -309,7 +472,38 @@ window.InkAnnotate = (function () {
     var w = s._w != null ? s._w : (s.text || "").length * px * 0.6;
     var h = s._h != null ? s._h
       : (s.text || "").split("\n").length * Math.round(px * 1.3);
-    return { x: s.points[0][0], y: s.points[0][1], w: w, h: h };
+    var pad = s.sticky ? px * 0.55 : 0;
+    return { x: s.points[0][0] - pad, y: s.points[0][1] - pad,
+             w: w + pad * 2, h: h + pad * 2 };
+  }
+
+  /* pasted slide snapshots: two corner points spanning the image */
+  function imageBox(s) {
+    var a = s.points[0], b = s.points[1];
+    return { x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]),
+             w: Math.abs(b[0] - a[0]), h: Math.abs(b[1] - a[1]) };
+  }
+
+  function drawImageStroke(s) {
+    if (!s._img) {
+      s._img = new Image();
+      s._img.onload = function () {
+        invalidate();
+        redraw();
+      };
+      s._img.src = s.src;
+    }
+    if (!s._img.complete || !s._img.naturalWidth) return;
+    var b = imageBox(s);
+    ctx.save();
+    ctx.shadowColor = "rgba(15, 23, 42, 0.3)";
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetY = 4;
+    ctx.drawImage(s._img, b.x, b.y, b.w, b.h);
+    ctx.restore();
+    ctx.strokeStyle = "rgba(30, 41, 59, 0.35)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
   }
 
   function textAt(p, pad) {
@@ -334,6 +528,13 @@ window.InkAnnotate = (function () {
       ctx.save();
       ctx.globalAlpha = 1;
       drawText(s);
+      ctx.restore();
+      return;
+    }
+    if (s.tool === "image") {
+      ctx.save();
+      ctx.globalAlpha = 1;
+      drawImageStroke(s);
       ctx.restore();
       return;
     }
@@ -608,6 +809,15 @@ window.InkAnnotate = (function () {
           out.push([cx + rx * px * k, cy + ry * py * k]);
         }
       }
+    } else if (s.shape === "curve") {
+      var cc = curveCtrl(s);
+      for (var v = 0; v <= 12; v++) {
+        var t = v / 12, mt = 1 - t;
+        out.push([
+          mt * mt * a[0] + 2 * mt * t * cc[0] + t * t * b[0],
+          mt * mt * a[1] + 2 * mt * t * cc[1] + t * t * b[1]
+        ]);
+      }
     } else {
       for (var u = 0; u <= 12; u++) {
         out.push([a[0] + (b[0] - a[0]) * u / 12,
@@ -626,8 +836,8 @@ window.InkAnnotate = (function () {
     for (var i = list.length - 1; i >= 0; i--) {
       var s = list[i];
       var hit;
-      if (s.tool === "text") {
-        var b = textBox(s);
+      if (s.tool === "text" || s.tool === "image") {
+        var b = s.tool === "text" ? textBox(s) : imageBox(s);
         hit = p[0] >= b.x - r && p[0] <= b.x + b.w + r &&
               p[1] >= b.y - r && p[1] <= b.y + b.h + r;
       } else {
@@ -733,7 +943,7 @@ window.InkAnnotate = (function () {
   function finalizeStroke(s) {
     if (s.tool === "shape") {
       if (s.shape === "line" || s.shape === "arrow") snapLine(s);
-      else snapBox(s);
+      else if (s.shape === "rect" || s.shape === "ellipse") snapBox(s);
     } else if (s.tool === "highlighter") {
       straightenHighlight(s);
     }
@@ -796,8 +1006,15 @@ window.InkAnnotate = (function () {
     ed.el.style.fontWeight = "600";
     ed.el.style.fontSize = px + "px";
     ed.el.style.lineHeight = (px * 1.3) + "px";
-    ed.el.style.color = ed.color;
-    ed.el.style.caretColor = ed.color;
+    if (ed.sticky) {
+      ed.el.style.background = ed.color;
+      ed.el.style.color = darkText(ed.color);
+      ed.el.style.caretColor = darkText(ed.color);
+    } else {
+      ed.el.style.background = "";
+      ed.el.style.color = ed.color;
+      ed.el.style.caretColor = ed.color;
+    }
     ed.el.style.setProperty("--ink-text-tint", ed.color);
     measureEditor();
   }
@@ -901,11 +1118,13 @@ window.InkAnnotate = (function () {
       el: ta,
       stroke: stroke || null,
       isNew: !stroke,
+      sticky: stroke ? !!stroke.sticky : tool === "note",
       x: stroke ? stroke.points[0][0] : x,
       y: stroke ? stroke.points[0][1] : y,
       size: stroke ? stroke.size : c.size,
       color: stroke ? stroke.color : c.color
     };
+    ta.classList.toggle("ink-sticky-editor", textEditor.sticky);
     if (stroke) {
       ta.value = stroke.text;
       stroke._editing = true;
@@ -960,6 +1179,7 @@ window.InkAnnotate = (function () {
       if (text) {
         execute({ type: "add", stroke: {
           tool: "text", color: ed.color, size: ed.size,
+          sticky: ed.sticky || undefined,
           text: text, points: [[ed.x, ed.y]]
         } });
       }
@@ -1032,14 +1252,42 @@ window.InkAnnotate = (function () {
       var nx = (p[0] - cx) / (rx || 1), ny = (p[1] - cy) / (ry || 1);
       return nx * nx + ny * ny <= 1;
     }
+    if (s.shape === "curve") {
+      var pts = shapeSamplePoints(s);
+      for (var k = 1; k < pts.length; k++) {
+        if (segDist(p, pts[k - 1], pts[k]) <= pad) return true;
+      }
+      return false;
+    }
     return segDist(p, a, b) <= pad;
   }
 
+  /* hit test for any selectable stroke: shapes by geometry, pen and
+   * highlighter strokes by distance to their polyline */
   function shapeAt(p, r) {
     var list = slideStrokes();
     for (var i = list.length - 1; i >= 0; i--) {
       var s = list[i];
-      if (s.tool === "shape" && shapeHit(s, p, r)) return s;
+      if (s.tool === "shape") {
+        if (shapeHit(s, p, r)) return s;
+      } else if (s.tool === "image") {
+        var ib = imageBox(s);
+        if (p[0] >= ib.x - r && p[0] <= ib.x + ib.w + r &&
+            p[1] >= ib.y - r && p[1] <= ib.y + ib.h + r) return s;
+      } else if (s.tool === "pen" || s.tool === "highlighter") {
+        var pad = r + (s.tool === "highlighter"
+          ? s.size * 2.2 : s.size / 2 + 2);
+        var pts = s.points;
+        if (pts.length === 1) {
+          if (Math.hypot(pts[0][0] - p[0], pts[0][1] - p[1]) <= pad) {
+            return s;
+          }
+          continue;
+        }
+        for (var k = 1; k < pts.length; k++) {
+          if (segDist(p, pts[k - 1], pts[k]) <= pad) return s;
+        }
+      }
     }
     return null;
   }
@@ -1058,6 +1306,7 @@ window.InkAnnotate = (function () {
     y = Math.min(window.innerHeight - bh - 8, y);
     selBar.style.left = x + "px";
     selBar.style.top = y + "px";
+    positionSelHandles();
   }
 
   function buildSelBar() {
@@ -1097,6 +1346,9 @@ window.InkAnnotate = (function () {
                 before: selected.size,
                 after: stepSize(selected.size, 1) });
       positionSelBar();
+    });
+    btn("", ICONS.copy, "Duplicate (Cmd/Ctrl+C, V)", function () {
+      if (selected) duplicateStroke(selected);
     });
     btn("ink-text-trash", ICONS.trash, "Delete shape", function () {
       if (!selected) return;
@@ -1147,11 +1399,182 @@ window.InkAnnotate = (function () {
     document.body.appendChild(selBar);
   }
 
+  /* ---------- resize handles + curve control handle ---------- */
+
+  var selHandles = null; // 4 corner squares
+  var ctrlHandle = null; // curved arrow control point
+
+  function rawBBox(s) {
+    var xs = s.points.map(function (p) { return p[0]; });
+    var ys = s.points.map(function (p) { return p[1]; });
+    return { x0: Math.min.apply(null, xs), x1: Math.max.apply(null, xs),
+             y0: Math.min.apply(null, ys), y1: Math.max.apply(null, ys) };
+  }
+
+  function buildSelHandles() {
+    selHandles = [];
+    for (var i = 0; i < 4; i++) {
+      var h = document.createElement("div");
+      h.className = "ink-sel-handle";
+      h.dataset.corner = String(i); // 0 tl, 1 tr, 2 br, 3 bl
+      h.style.display = "none";
+      attachResize(h);
+      document.body.appendChild(h);
+      selHandles.push(h);
+    }
+    ctrlHandle = document.createElement("div");
+    ctrlHandle.className = "ink-sel-handle ink-sel-ctrl";
+    ctrlHandle.title = "Bend";
+    ctrlHandle.style.display = "none";
+    attachCtrlDrag(ctrlHandle);
+    document.body.appendChild(ctrlHandle);
+  }
+
+  function attachResize(h) {
+    h.addEventListener("pointerdown", function (e) {
+      if (!selected) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var s = selected;
+      var f = slideFrame();
+      var b = rawBBox(s);
+      var corner = Number(h.dataset.corner);
+      // the corner opposite to the grabbed one stays fixed
+      var ax = (corner === 1 || corner === 2) ? b.x0 : b.x1;
+      var ay = (corner === 2 || corner === 3) ? b.y0 : b.y1;
+      var start = {
+        pts: s.points.map(function (p) { return p.slice(); }),
+        w: (corner === 1 || corner === 2) ? b.x1 - b.x0 : b.x0 - b.x1,
+        h: (corner === 2 || corner === 3) ? b.y1 - b.y0 : b.y0 - b.y1
+      };
+      try { h.setPointerCapture(e.pointerId); } catch (err) {}
+      function mv(ev) {
+        var q = toSlide(ev.clientX, ev.clientY, f);
+        var sx = start.w ? (q[0] - ax) / start.w : 1;
+        var sy = start.h ? (q[1] - ay) / start.h : 1;
+        if (Math.abs(sx) < 0.05) sx = sx < 0 ? -0.05 : 0.05;
+        if (Math.abs(sy) < 0.05) sy = sy < 0 ? -0.05 : 0.05;
+        if (s.tool === "image") {
+          // pasted slides keep their aspect ratio: uniform scale
+          // from the drag distance along the box diagonal
+          var d0 = Math.hypot(start.w, start.h) || 1;
+          var d1 = Math.hypot(q[0] - ax, q[1] - ay);
+          sx = sy = Math.max(0.05, d1 / d0);
+        }
+        s.points = start.pts.map(function (p) {
+          var n = p.slice();
+          n[0] = ax + (p[0] - ax) * sx;
+          n[1] = ay + (p[1] - ay) * sy;
+          return n;
+        });
+        invalidate();
+        redraw();
+        positionSelBar();
+      }
+      function up() {
+        h.removeEventListener("pointermove", mv);
+        h.removeEventListener("pointerup", up);
+        h.removeEventListener("pointercancel", up);
+        pushMoveCmd(s, start.pts);
+      }
+      h.addEventListener("pointermove", mv);
+      h.addEventListener("pointerup", up);
+      h.addEventListener("pointercancel", up);
+    });
+  }
+
+  function attachCtrlDrag(h) {
+    h.addEventListener("pointerdown", function (e) {
+      if (!selected || selected.shape !== "curve") return;
+      e.preventDefault();
+      e.stopPropagation();
+      var s = selected;
+      var f = slideFrame();
+      var start = s.points.map(function (p) { return p.slice(); });
+      try { h.setPointerCapture(e.pointerId); } catch (err) {}
+      function mv(ev) {
+        var q = toSlide(ev.clientX, ev.clientY, f);
+        s.points[1] = [q[0], q[1]];
+        invalidate();
+        redraw();
+        positionSelBar();
+      }
+      function up() {
+        h.removeEventListener("pointermove", mv);
+        h.removeEventListener("pointerup", up);
+        h.removeEventListener("pointercancel", up);
+        pushMoveCmd(s, start);
+      }
+      h.addEventListener("pointermove", mv);
+      h.addEventListener("pointerup", up);
+      h.addEventListener("pointercancel", up);
+    });
+  }
+
+  var clipboard = null;
+
+  function duplicateStroke(s) {
+    var copy = JSON.parse(JSON.stringify(s, stripPrivate));
+    copy.points = copy.points.map(function (p) {
+      p[0] += 16;
+      p[1] += 16;
+      return p;
+    });
+    execute({ type: "add", stroke: copy });
+    selectStroke(copy);
+    showToast("Duplicated");
+  }
+
+  function pushMoveCmd(s, fromPts) {
+    var to = s.points.map(function (p) { return p.slice(); });
+    var same = fromPts.length === to.length &&
+      fromPts.every(function (p, i) {
+        return p[0] === to[i][0] && p[1] === to[i][1];
+      });
+    if (same) return;
+    var hh = slideHistory();
+    hh.done.push({ type: "move", stroke: s, from: fromPts, to: to });
+    if (hh.done.length > HISTORY_LIMIT) hh.done.shift();
+    hh.undone = [];
+    persist();
+    refreshHistoryButtons();
+  }
+
+  function positionSelHandles() {
+    if (!selHandles) return;
+    if (!selected) {
+      selHandles.forEach(function (h) { h.style.display = "none"; });
+      ctrlHandle.style.display = "none";
+      return;
+    }
+    var f = slideFrame();
+    var b = strokeBBox(selected);
+    var xs = [b.x, b.x + b.w, b.x + b.w, b.x];
+    var ys = [b.y, b.y, b.y + b.h, b.y + b.h];
+    for (var i = 0; i < 4; i++) {
+      selHandles[i].style.display = "block";
+      selHandles[i].style.left =
+        (f.left + xs[i] * f.scale) + "px";
+      selHandles[i].style.top =
+        (f.top + ys[i] * f.scale) + "px";
+    }
+    if (selected.tool === "shape" && selected.shape === "curve") {
+      var cc = curveCtrl(selected);
+      ctrlHandle.style.display = "block";
+      ctrlHandle.style.left = (f.left + cc[0] * f.scale) + "px";
+      ctrlHandle.style.top = (f.top + cc[1] * f.scale) + "px";
+    } else {
+      ctrlHandle.style.display = "none";
+    }
+  }
+
   function selectStroke(s) {
     if (!selBar) buildSelBar();
+    if (!selHandles) buildSelHandles();
     selected = s;
     selBar.style.display = "flex";
     positionSelBar();
+    positionSelHandles();
     redraw();
   }
 
@@ -1159,6 +1582,7 @@ window.InkAnnotate = (function () {
     if (!selected) return;
     selected = null;
     if (selBar) selBar.style.display = "none";
+    positionSelHandles();
     redraw();
   }
 
@@ -1167,6 +1591,7 @@ window.InkAnnotate = (function () {
     if (selected && slideStrokes().indexOf(selected) < 0) {
       selected = null;
       if (selBar) selBar.style.display = "none";
+      positionSelHandles();
     }
   }
 
@@ -1191,13 +1616,90 @@ window.InkAnnotate = (function () {
     return !(penOnly && e.pointerType !== "pen");
   }
 
+  /* Targeted pass-through: selected deck widgets stay usable in draw
+   * mode. The full hit-test stack is scanned (decks can carry their
+   * own overlay canvases), skipping our ink canvas. */
+
+  var CLICK_THROUGH_SEL =
+    ".panel-tabset [role='tab'], .panel-tabset .nav-link, " +
+    ".panel-tabset > ul > li > a, " +
+    ".leaflet-control-container a, .leaflet-control-container button, " +
+    ".maplibregl-ctrl button, .mapboxgl-ctrl button, " +
+    ".ol-control button, " +
+    "a[role='doc-biblioref'], a.footnote-ref, a.xref";
+
+  /* Pass-through zones: while the pointer hovers one of these, the
+   * ink canvas stops intercepting events entirely, so the widget
+   * underneath gets REAL pointer interaction (hover styles, expand-
+   * on-hover controls, tooltips, clicks). A document-level listener
+   * re-arms the canvas once the pointer leaves the zone. */
+  var PASS_ZONE_SEL =
+    ".panel-tabset [role='tab'], .panel-tabset .nav-link, " +
+    ".panel-tabset > ul, .nav-tabs, " +
+    ".leaflet-control-container, " +
+    ".mapboxgl-ctrl, .maplibregl-ctrl, .ol-control, " +
+    "a[role='doc-biblioref'], a.footnote-ref, a.xref, " +
+    "[data-tippy-root], .tippy-box";
+
+  var passThrough = false;
+  var passBlocked = []; // foreign overlays muted while a zone is live
+
+  function setPass(on) {
+    if (on === passThrough) return;
+    passThrough = on;
+    canvas.style.pointerEvents = (drawMode && !on) ? "auto" : "none";
+  }
+
+  /* Engage a pass-through zone at a point. Decks can carry their own
+   * fullscreen overlay canvases (e.g. a bundled laser pointer) that
+   * would swallow the forwarded events; any canvas sitting above the
+   * zone widget in the hit stack is muted until the zone is left. */
+  function engagePassAt(x, y) {
+    var stack = document.elementsFromPoint(x, y);
+    var blocked = [];
+    var found = null;
+    for (var i = 0; i < stack.length; i++) {
+      var el = stack[i];
+      if (el === canvas || !el.closest) continue;
+      found = el.closest(PASS_ZONE_SEL);
+      if (found) break;
+      if (el.tagName === "CANVAS") blocked.push(el);
+    }
+    if (!found) return false;
+    blocked.forEach(function (el) {
+      passBlocked.push({ el: el, prev: el.style.pointerEvents });
+      el.style.pointerEvents = "none";
+    });
+    setPass(true);
+    return true;
+  }
+
+  function releasePass() {
+    passBlocked.forEach(function (b) {
+      b.el.style.pointerEvents = b.prev;
+    });
+    passBlocked = [];
+    setPass(false);
+  }
+
+  function interactiveUnder(x, y, sel) {
+    var stack = document.elementsFromPoint(x, y);
+    for (var i = 0; i < stack.length; i++) {
+      var el = stack[i];
+      if (el === canvas || !el.closest) continue;
+      var hit = el.closest(sel);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
   function pressureOf(e) {
     if (e.pointerType === "pen" && e.pressure > 0) return e.pressure;
     return 0.6;
   }
 
   function onPointerDown(e) {
-    if (!drawMode) return;
+    if (!drawMode || capturing) return;
     if (e.pointerType === "touch") {
       if (touchIds.indexOf(e.pointerId) < 0) touchIds.push(e.pointerId);
       // second finger lands while a fresh touch stroke is starting:
@@ -1212,6 +1714,20 @@ window.InkAnnotate = (function () {
       if (touchIds.length >= 2) return;
     }
     if (!accepts(e)) return;
+    // taps on pass-through widgets (tab headers, map controls,
+    // citation links) operate the widget instead of drawing
+    var widget = interactiveUnder(e.clientX, e.clientY,
+      CLICK_THROUGH_SEL);
+    if (widget) {
+      e.preventDefault();
+      widget.click();
+      setTimeout(function () {
+        invalidate();
+        redraw();
+        refreshHistoryButtons();
+      }, 50);
+      return;
+    }
     e.preventDefault();
     hidePopover();
     hideMenu();
@@ -1232,18 +1748,28 @@ window.InkAnnotate = (function () {
       current = { tool: "laser" };
       return;
     }
+    if (tool === "zoom") {
+      current = { tool: "zoom" };
+      ensureLensShot(function () {
+        if (current && current.tool === "zoom") {
+          moveLens(e.clientX, e.clientY);
+        }
+      });
+      return;
+    }
     // text notes are grabbable with the pen and shape tools too:
     // dragging one moves it instead of drawing over it (the
     // highlighter is exempt so notes can still be highlighted)
-    if (tool === "text" || tool === "pen" || tool === "shape") {
-      if (tool === "text" && textEditor) {
+    if (tool === "text" || tool === "note" ||
+        tool === "pen" || tool === "shape") {
+      if ((tool === "text" || tool === "note") && textEditor) {
         // a tap while the editor is open just commits it
         commitTextEditor();
         return;
       }
       var tp = toSlide(e.clientX, e.clientY);
       var hitText = textAt(tp, 6 / slideFrame().scale);
-      if (tool === "text" || hitText) {
+      if (tool === "text" || tool === "note" || hitText) {
         current = {
           tool: "text", startX: e.clientX, startY: e.clientY,
           target: hitText,
@@ -1284,11 +1810,16 @@ window.InkAnnotate = (function () {
   function onPointerMove(e) {
     if (!drawMode) return;
     if (tool === "eraser") moveEraserRing(e.clientX, e.clientY);
-    if (!current &&
-        (tool === "pen" || tool === "shape" || tool === "text")) {
+    if (!current && (tool === "pen" || tool === "shape" ||
+        tool === "text" || tool === "note")) {
+      // entering a pass-through zone hands the pointer to the deck
+      // widget below (tabs, map controls, citation previews)
+      if (engagePassAt(e.clientX, e.clientY)) return;
       // show a move cursor while hovering a grabbable item
       var hp = toSlide(e.clientX, e.clientY);
       var hf = slideFrame().scale;
+      canvas.classList.toggle("ink-link-cursor",
+        !!interactiveUnder(e.clientX, e.clientY, CLICK_THROUGH_SEL));
       canvas.classList.toggle("ink-move-cursor",
         !!textAt(hp, 6 / hf) ||
         (tool === "shape" && !!shapeAt(hp, 10 / hf)));
@@ -1302,6 +1833,12 @@ window.InkAnnotate = (function () {
     }
     if (current.tool === "laser") {
       pushLaserPoint(e.clientX, e.clientY);
+      return;
+    }
+    if (current.tool === "zoom") {
+      if (lens.shot || !window.html2canvas) {
+        moveLens(e.clientX, e.clientY);
+      }
       return;
     }
     if (current.tool === "grab") {
@@ -1345,7 +1882,17 @@ window.InkAnnotate = (function () {
     var f = slideFrame();
     if (current.tool === "shape") {
       var q = toSlide(e.clientX, e.clientY, f);
-      current.points = [current.points[0], [q[0], q[1]]];
+      var a0 = current.points[0];
+      if (current.shape === "curve") {
+        // auto control point: perpendicular offset from the middle,
+        // adjustable later via the selection's control handle
+        current.points = [a0,
+          [(a0[0] + q[0]) / 2 - (q[1] - a0[1]) * 0.25,
+           (a0[1] + q[1]) / 2 + (q[0] - a0[0]) * 0.25],
+          [q[0], q[1]]];
+      } else {
+        current.points = [a0, [q[0], q[1]]];
+      }
       redraw();
       return;
     }
@@ -1381,6 +1928,11 @@ window.InkAnnotate = (function () {
       current = null;
       return;
     }
+    if (current.tool === "zoom") {
+      hideLens();
+      current = null;
+      return;
+    }
     if (current.tool === "eraser") {
       commitEraseBatch();
       current = null;
@@ -1413,7 +1965,8 @@ window.InkAnnotate = (function () {
         th.undone = [];
         persist();
         refreshHistoryButtons();
-      } else if (tcur.grabTool !== "text") {
+      } else if (tcur.grabTool !== "text" &&
+                 tcur.grabTool !== "note") {
         // a grab that never moved, made with another tool: no-op
         redraw();
       } else if (tcur.target) {
@@ -1441,19 +1994,61 @@ window.InkAnnotate = (function () {
 
   /* ================= export ================= */
 
+  /* PNG export captures the current slide WITH its ink on top (the
+   * same rasteriser as the PDF export), not just the bare ink. */
   function exportPng() {
-    var out = document.createElement("canvas");
-    out.width = canvas.width;
-    out.height = canvas.height;
-    var octx = out.getContext("2d");
-    octx.fillStyle = "#ffffff";
-    octx.fillRect(0, 0, out.width, out.height);
-    octx.drawImage(canvas, 0, 0);
+    if (!window.html2canvas) {
+      // fallback: ink only, on white
+      var bare = document.createElement("canvas");
+      bare.width = canvas.width;
+      bare.height = canvas.height;
+      var bctx2 = bare.getContext("2d");
+      bctx2.fillStyle = "#ffffff";
+      bctx2.fillRect(0, 0, bare.width, bare.height);
+      bctx2.drawImage(canvas, 0, 0);
+      downloadPng(bare);
+      return;
+    }
+    showToast("Rendering PNG…", 15000);
+    commitTextEditor();
+    deselect();
+    closeBloom();
+    hideMenu();
+    var W = window.innerWidth, H = window.innerHeight;
+    var cur = deck.getCurrentSlide();
+    window.html2canvas(document.body, {
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      width: W, height: H,
+      windowWidth: W, windowHeight: H,
+      ignoreElements: function (el) {
+        if (el.matches && el.matches(PDF_IGNORE_SEL)) return true;
+        return el.tagName === "SECTION" &&
+               el !== cur &&
+               !el.contains(cur) &&
+               !cur.contains(el);
+      }
+    }).then(function (shot) {
+      var out = document.createElement("canvas");
+      out.width = shot.width;
+      out.height = shot.height;
+      var c2 = out.getContext("2d");
+      c2.drawImage(shot, 0, 0);
+      c2.drawImage(canvas, 0, 0, out.width, out.height);
+      downloadPng(out);
+    }).catch(function () {
+      showToast("PNG export failed");
+    });
+  }
+
+  function downloadPng(cv) {
     var a = document.createElement("a");
-    a.download = "slide-" + slideKey() + "-ink.png";
-    a.href = out.toDataURL("image/png");
+    a.download = "slide-" + slideKey().replace(/[|]/g, "-") +
+      "-annotated.png";
+    a.href = cv.toDataURL("image/png");
     a.click();
-    showToast("Annotations exported as PNG");
+    showToast("Slide exported as PNG");
   }
 
   /* Export the whole deck as a standalone HTML file with every
@@ -1509,20 +2104,31 @@ window.InkAnnotate = (function () {
   function exportHtml() {
     showToast("Preparing annotated HTML…", 4000);
     var clone = document.documentElement.cloneNode(true);
-    ["ink-canvas", "ink-orb-root", "ink-toast",
-     "ink-laser", "ink-eraser-ring"].forEach(function (id) {
-      var el = clone.querySelector("#" + id);
-      if (el) el.remove();
-    });
-    clone.querySelectorAll(".ink-text-editor, .ink-text-controls")
-      .forEach(function (el) { el.remove(); });
+    // strip everything that scripts recreate at runtime — leaving
+    // these in the clone would duplicate them when the exported
+    // file boots (our UI, quarto menu, deck widgets like progress
+    // indicators, laser pointers, chalkboards, tooltips)
+    clone.querySelectorAll(
+      "#ink-canvas, #ink-orb-root, #ink-toast, #ink-laser, " +
+      "#ink-eraser-ring, .ink-text-editor, .ink-text-controls, " +
+      ".ink-sel-handle, #ink-board, #ink-board-bar, " +
+      ".slide-menu-wrapper, .slide-menu-button, " +
+      ".progress-indicator, .indicator-settings-btn, " +
+      ".indicator-settings-panel, .indicator-tooltip, " +
+      "#laser-container, #laser-canvas, .cursor-dropdown, " +
+      ".slide-chalkboard-buttons, .chalkboard-canvas, " +
+      ".chalkboard-palette, " +
+      "[data-tippy-root], .tippy-box, .glightbox-container"
+    ).forEach(function (el) { el.remove(); });
     var body = clone.querySelector("body");
     body.classList.remove("ink-drawing");
 
     var seed = document.createElement("script");
     seed.textContent = "window.InkAnnotateSeed = " +
-      JSON.stringify(strokes, stripPrivate)
-        .replace(/<\//g, "<\\/") + ";";
+      JSON.stringify({
+        id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+        strokes: strokes
+      }, stripPrivate).replace(/<\//g, "<\\/") + ";";
     // the seed must run before reveal initialises the plugin,
     // so it goes first in <head>, not at the end of <body>
     var head = clone.querySelector("head");
@@ -1639,6 +2245,16 @@ window.InkAnnotate = (function () {
   var ICONS = {
     pen: '<svg viewBox="0 0 24 24"><path d="M3 17.2V21h3.8L17.9 9.9l-3.8-3.8L3 17.2zM20.7 7.1a1 1 0 0 0 0-1.4l-2.4-2.4a1 1 0 0 0-1.4 0l-1.9 1.9 3.8 3.8 1.9-1.9z"/></svg>',
     highlighter: '<svg viewBox="0 0 24 24"><path d="M4 21h16v2H4v-2zM17.7 2.9l3.4 3.4c.4.4.4 1 0 1.4l-9.6 9.6-4.8 1.4 1.4-4.8 9.6-9.6c.4-.4 1-.4 1.4 0z"/></svg>',
+    note: '<svg viewBox="0 0 24 24"><path d="M4 4h16v10.5L14.5 20H4V4zm10.6 14 3.9-3.9h-3.9V18z"/></svg>',
+    copy: '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="1.6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5.5 15.5H4.8A1.8 1.8 0 0 1 3 13.7V4.8A1.8 1.8 0 0 1 4.8 3h8.9a1.8 1.8 0 0 1 1.8 1.8v.7" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
+    camera: '<svg viewBox="0 0 24 24"><path d="M9 4.5 7.6 6.5H4.5A1.5 1.5 0 0 0 3 8v10a1.5 1.5 0 0 0 1.5 1.5h15A1.5 1.5 0 0 0 21 18V8a1.5 1.5 0 0 0-1.5-1.5h-3.1L15 4.5H9z"/><circle cx="12" cy="12.8" r="3.4" fill="#10121a"/></svg>',
+    zoom: '<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M15 15l5.4 5.4" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><path d="M8 10.5h5M10.5 8v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    bg: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M4 9.3h16M4 14.6h16M9.3 4v16M14.6 4v16" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>',
+    board: '<svg viewBox="0 0 24 24"><rect x="3" y="3.5" width="18" height="12.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 16v3.2M7.5 21.2l4.5-2 4.5 2M7 9.5c2-2.4 4 2.4 6 0s2.6-1.4 4-.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    prev: '<svg viewBox="0 0 24 24"><path d="M14.6 5.2 8 12l6.6 6.8 1.5-1.4L10.9 12l5.2-5.4-1.5-1.4z"/></svg>',
+    next: '<svg viewBox="0 0 24 24"><path d="M9.4 5.2 16 12l-6.6 6.8-1.5-1.4L13.1 12 7.9 6.6l1.5-1.4z"/></svg>',
+    github: '<svg viewBox="0 0 24 24"><path d="M12 1.8a10.2 10.2 0 0 0-3.22 19.88c.51.09.7-.22.7-.49v-1.72c-2.84.62-3.44-1.37-3.44-1.37-.46-1.18-1.13-1.49-1.13-1.49-.93-.63.07-.62.07-.62 1.03.07 1.57 1.05 1.57 1.05.91 1.57 2.39 1.12 2.97.85.09-.66.36-1.11.65-1.37-2.27-.26-4.65-1.13-4.65-5.04 0-1.11.4-2.02 1.05-2.74-.11-.26-.46-1.3.1-2.7 0 0 .86-.28 2.8 1.05a9.72 9.72 0 0 1 5.11 0c1.94-1.33 2.8-1.05 2.8-1.05.56 1.4.21 2.44.1 2.7.65.72 1.05 1.63 1.05 2.74 0 3.92-2.39 4.78-4.66 5.03.37.32.69.94.69 1.9v2.81c0 .27.18.59.7.49A10.2 10.2 0 0 0 12 1.8z"/></svg>',
+    doc: '<svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm8 1.5V8h4.5L14 3.5zM8 12h8v1.6H8V12zm0 3.4h8V17H8v-1.6z"/></svg>',
     layers: '<svg viewBox="0 0 24 24"><path d="M12 3 2 8.5 12 14l10-5.5L12 3zm-10 10 10 5.5L22 13l-2-1.1-8 4.4-8-4.4L2 13zm0 3.8 10 5.5 10-5.5-2-1.1-8 4.4-8-4.4-2 1.1z"/></svg>',
     image: '<svg viewBox="0 0 24 24"><path d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v12h14V6H5zm2.5 3.5A1.5 1.5 0 1 1 9 11a1.5 1.5 0 0 1-1.5-1.5zM6.5 16.5 10 12l2.5 3 2-2.5 3.5 4h-11.5z"/></svg>',
     code: '<svg viewBox="0 0 24 24"><path d="M8.6 16.6 4 12l4.6-4.6L10 8.8 6.8 12 10 15.2l-1.4 1.4zm6.8 0L14 15.2 17.2 12 14 8.8l1.4-1.4L20 12l-4.6 4.6z"/></svg>',
@@ -1656,6 +2272,7 @@ window.InkAnnotate = (function () {
     close: '<svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19l1.4-1.4L13.4 12 19 6.4 17.6 5 12 10.6 6.4 5z"/></svg>',
     line: '<svg viewBox="0 0 24 24"><path d="M4 20 20 4" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"/></svg>',
     arrow: '<svg viewBox="0 0 24 24"><path d="M4 20 18 6M18 6h-6M18 6v6" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    curve: '<svg viewBox="0 0 24 24"><path d="M4 20C5 12 10 7 18 6" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"/><path d="M18 6l-5.4-.6M18 6l-1.2 5.2" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     rect: '<svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="1.5" stroke="currentColor" stroke-width="2.2" fill="none"/></svg>',
     ellipse: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="8.5" ry="6" stroke="currentColor" stroke-width="2.2" fill="none"/></svg>'
   };
@@ -1674,16 +2291,40 @@ window.InkAnnotate = (function () {
 
   /* ---------- tool state ---------- */
 
+  function scrollViewActive() {
+    var r = deck.getRevealElement();
+    return !!(r && r.classList.contains("reveal-scroll"));
+  }
+
   function setDrawMode(on) {
+    if (on && scrollViewActive()) {
+      showToast("Drawing is unavailable in scroll view");
+      return;
+    }
+    if (on && deck.isOverview && deck.isOverview()) {
+      deck.toggleOverview(false);
+    }
     if (!on) {
       commitTextEditor();
       deselect();
+      hideLens();
+      if (boardOn) {
+        boardOn = false;
+        document.body.classList.remove("ink-board-on");
+        syncBoardPetal();
+        invalidate();
+      }
     }
     drawMode = on;
+    releasePass();
+    passThrough = false;
     canvas.style.pointerEvents = on ? "auto" : "none";
     canvas.style.touchAction = on ? "none" : "auto";
     document.body.classList.toggle("ink-drawing", on);
     orbRoot.classList.toggle("ink-armed", on);
+    // the orb is fully hidden outside draw mode: it only appears
+    // via the D shortcut or the burger menu tool
+    orbRoot.classList.toggle("ink-shown", on);
     if (!on) {
       hideLaser();
       eraserRing.style.display = "none";
@@ -1702,7 +2343,10 @@ window.InkAnnotate = (function () {
     }
     tool = t;
     canvas.classList.toggle("ink-hide-cursor", t === "eraser");
-    canvas.classList.toggle("ink-text-cursor", t === "text");
+    canvas.classList.toggle("ink-text-cursor",
+      t === "text" || t === "note");
+    canvas.classList.toggle("ink-zoom-cursor", t === "zoom");
+    if (t !== "zoom") hideLens();
     if (t !== "eraser") eraserRing.style.display = "none";
     refreshOrb();
     if (bloomOpen) layoutBloom(); // shape ring may appear/disappear
@@ -1807,8 +2451,10 @@ window.InkAnnotate = (function () {
     orbRoot.appendChild(bloomEl);
 
     [["pen", "Pen (P)"], ["highlighter", "Highlighter (H)"],
-     ["text", "Text (T)"], ["shape", "Shapes (S)"],
-     ["eraser", "Eraser (E)"], ["laser", "Laser (L)"]].forEach(function (t) {
+     ["text", "Text (T)"], ["note", "Sticky note"],
+     ["shape", "Shapes (S)"],
+     ["eraser", "Eraser (E)"], ["laser", "Laser (L)"],
+     ["zoom", "Magnifier"]].forEach(function (t) {
       petal({
         title: t[1], svg: ICONS[t[0]], cls: "ink-petal-tool",
         dataset: { ring: "tool", key: t[0] },
@@ -1850,7 +2496,7 @@ window.InkAnnotate = (function () {
       b.innerHTML = "<span class='ink-dot'></span>";
     });
 
-    [["arrow", "Arrow"], ["line", "Line"],
+    [["arrow", "Arrow"], ["curve", "Curved arrow"], ["line", "Line"],
      ["rect", "Rectangle"], ["ellipse", "Ellipse"]].forEach(function (s) {
       petal({
         title: s[1], svg: ICONS[s[0]], cls: "ink-petal-shape",
@@ -1859,6 +2505,12 @@ window.InkAnnotate = (function () {
       });
     });
 
+    petal({
+      title: "Whiteboard", svg: ICONS.board,
+      cls: "ink-petal-action",
+      dataset: { ring: "action", key: "board" },
+      onclick: function () { toggleBoard(!boardOn); }
+    });
     undoBtn = petal({
       title: "Undo (Z)", svg: ICONS.undo, cls: "ink-petal-action",
       dataset: { ring: "action", key: "undo" },
@@ -2016,11 +2668,18 @@ window.InkAnnotate = (function () {
       ringPositions(pos, "[data-ring='shape']", R.shape, base, 130);
     }
 
-    // actions sit on the size ring, just beyond the shared fan
+    // actions sit on the size ring, just beyond the shared fan,
+    // split evenly between the two flanks
     var acts = bloomEl.querySelectorAll("[data-ring='action']");
     var off = Math.max(FAN, toolSpan || FAN) / 2;
-    var actAng = [base - off - 35, base - off - 15,
-                  base + off + 15, base + off + 35];
+    var actAng = [];
+    var leftN = Math.floor(acts.length / 2);
+    for (var la = 0; la < leftN; la++) {
+      actAng.push(base - off - 15 - la * 20);
+    }
+    for (var ra = 0; ra < acts.length - leftN; ra++) {
+      actAng.push(base + off + 15 + ra * 20);
+    }
     for (var i = 0; i < acts.length; i++) {
       var rad = actAng[i] * Math.PI / 180;
       pos.push({
@@ -2090,40 +2749,109 @@ window.InkAnnotate = (function () {
     menuEl = document.createElement("div");
     menuEl.id = "ink-menu";
     var items = [
+      { group: "Clean up" },
       { key: "clear", label: "Clear this slide", icon: ICONS.eraser,
+        desc: "Remove all ink from the current slide",
+        confirm: true,
+        empty: function () { return slideStrokes().length === 0; },
         fn: function () {
-          if (slideStrokes().length === 0 ||
-              window.confirm("Clear all ink on this slide?")) {
-            clearSlide();
-            showToast("Slide cleared");
-          }
+          clearSlide();
+          showToast("Slide cleared");
         } },
       { key: "clearall", label: "Clear all slides", icon: ICONS.layers,
+        desc: "Remove ink from the whole presentation",
+        confirm: true,
+        empty: function () {
+          return Object.keys(strokes).every(function (k) {
+            return strokes[k].length === 0;
+          });
+        },
         fn: function () {
-          if (window.confirm("Remove ink from every slide?")) {
-            clearAllSlides();
-            showToast("All slides cleared");
-          }
+          clearAllSlides();
+          showToast("All slides cleared");
         } },
-      { key: "export", label: "Export PNG", icon: ICONS.image,
+      { group: "Export" },
+      { key: "export", label: "PNG image", icon: ICONS.image,
+        desc: "This slide with its ink, as an image",
         fn: exportPng },
-      { key: "exporthtml", label: "Export annotated HTML",
-        icon: ICONS.code, fn: exportHtml },
+      { key: "exporthtml", label: "Annotated HTML",
+        icon: ICONS.code,
+        desc: "The whole deck with drawings, as one file",
+        fn: exportHtml },
+      { key: "exportpdf", label: "PDF document", icon: ICONS.doc,
+        desc: "All slides with their ink, one page each",
+        fn: exportPdf },
+      { group: "Input" },
       { key: "penonly", label: "Pen-only input", icon: ICONS.pen,
-        fn: togglePenOnly, check: true }
+        desc: "Ignore fingers, draw with a stylus only",
+        fn: togglePenOnly, check: true },
+      { group: "Sessions" },
+      { key: "sessions", label: "Annotation sessions",
+        icon: ICONS.layers,
+        desc: "Switch or start a named set of drawings",
+        fn: function () { showSessionDialog(null); } },
+      { group: "About", hidden: !inkShowGithub },
+      { key: "github", hidden: !inkShowGithub,
+        label: "Ink on GitHub", icon: ICONS.github,
+        desc: "ofurkancoban/QuartoInkExtension",
+        fn: function () {
+          window.open(
+            "https://github.com/ofurkancoban/QuartoInkExtension",
+            "_blank", "noopener");
+        } }
     ];
     items.forEach(function (it) {
+      if (it.hidden) return;
+      if (it.group) {
+        var g = document.createElement("div");
+        g.className = "ink-menu-head";
+        g.textContent = it.group;
+        menuEl.appendChild(g);
+        return;
+      }
       var b = document.createElement("button");
       b.className = "ink-menu-item";
       b.dataset.inkMenu = it.key;
       b.innerHTML =
         "<span class='ink-menu-ico'>" + it.icon + "</span>" +
-        "<span class='ink-menu-label'>" + it.label + "</span>" +
+        "<span class='ink-menu-text'>" +
+          "<span class='ink-menu-label'>" + it.label + "</span>" +
+          "<span class='ink-menu-desc'>" + it.desc + "</span>" +
+        "</span>" +
         "<span class='ink-check'>✓</span>";
       b.querySelector(".ink-check").style.visibility =
         (it.check && penOnly) ? "visible" : "hidden";
+      var armTimer = null;
+      function disarm() {
+        clearTimeout(armTimer);
+        armTimer = null;
+        b.classList.remove("ink-menu-danger");
+        b.querySelector(".ink-menu-label").textContent = it.label;
+        b.querySelector(".ink-menu-desc").textContent = it.desc;
+      }
       b.addEventListener("click", function (e) {
         e.stopPropagation();
+        if (it.confirm) {
+          // destructive items ask for a second tap instead of a
+          // blocking browser confirm dialog
+          if (it.empty && it.empty()) {
+            showToast("Nothing to clear");
+            return;
+          }
+          if (armTimer) {
+            disarm();
+            hideMenu();
+            it.fn();
+          } else {
+            b.classList.add("ink-menu-danger");
+            b.querySelector(".ink-menu-label").textContent =
+              "Tap again to confirm";
+            b.querySelector(".ink-menu-desc").textContent =
+              it.label + " cannot be redone from here, only via undo";
+            armTimer = setTimeout(disarm, 2500);
+          }
+          return;
+        }
         if (!it.check) hideMenu();
         it.fn();
       });
@@ -2211,6 +2939,717 @@ window.InkAnnotate = (function () {
     });
   }
 
+  /* ---------- PDF export ----------
+   * In reveal's print layout (?print-pdf) the live canvas cannot
+   * work, so every slide gets its ink baked into an <img> overlay:
+   * the drawings then survive the browser's print-to-PDF. */
+
+  function buildPrintOverlays() {
+    var w = deck.getConfig().width;
+    var h = deck.getConfig().height;
+    var dpr = 2;
+    deck.getSlides().forEach(function (sl) {
+      var idx = deck.getIndices(sl);
+      var key = idx.h + "." + (idx.v || 0);
+      var list = (strokes[key] || []).slice();
+      // print shows every tabset on its first tab: include that
+      // tab combination's ink as well
+      var sets = sl.querySelectorAll(".panel-tabset");
+      if (sets.length > 0) {
+        var zeros = [];
+        sets.forEach(function () { zeros.push(0); });
+        list = list.concat(
+          strokes[key + "|t" + zeros.join(".")] || []);
+      }
+      if (list.length === 0) return;
+      if (sl.querySelector(".ink-print-overlay")) return;
+      var cv = document.createElement("canvas");
+      cv.width = w * dpr;
+      cv.height = h * dpr;
+      var c2 = cv.getContext("2d");
+      c2.setTransform(dpr, 0, 0, dpr, 0, 0);
+      var main = ctx;
+      ctx = c2;
+      list.forEach(drawStroke);
+      ctx = main;
+      var img = document.createElement("img");
+      img.className = "ink-print-overlay";
+      img.src = cv.toDataURL("image/png");
+      img.style.width = w + "px";
+      img.style.height = h + "px";
+      sl.style.position = "relative"; // anchor the overlay to the slide
+      sl.appendChild(img);
+    });
+  }
+
+  function initPrintMode() {
+    restore();
+    // inject before reveal's print layout restructures the DOM:
+    // the overlays then travel with their slides into the pdf pages
+    buildPrintOverlays();
+    var done = false;
+    function ready() {
+      if (done) return;
+      done = true;
+      var auto = false;
+      try {
+        auto = sessionStorage.getItem("quarto-ink-print") === "1";
+        sessionStorage.removeItem("quarto-ink-print");
+      } catch (e) { /* ignore */ }
+      if (auto) {
+        window.addEventListener("afterprint", function () {
+          // return to the normal presentation view
+          location.href = location.href
+            .replace(/[?&]print-pdf/g, "")
+            .replace(/\?$/, "");
+        });
+        setTimeout(function () { window.print(); }, 800);
+      }
+    }
+    deck.on("pdf-ready", ready);
+    setTimeout(ready, 2500); // fallback if the event never fires
+  }
+
+  /* Real PDF export: every slide is rasterised with the bundled
+   * html2canvas, its ink composited on top, and the pages are packed
+   * into a downloadable PDF with the bundled jsPDF.
+   *
+   * Slides with panel-tabsets are visited tab by tab, in order, so
+   * every tab (and its own ink layer) gets a page. For speed, all
+   * inactive slides are excluded from rasterisation (html2canvas
+   * otherwise walks the entire deck DOM for every single page). */
+
+  function tabsetTabs(ts) {
+    return ts.querySelectorAll(
+      "ul [role='tab'], ul .nav-link, ul > li > a");
+  }
+
+  function tabCombos(slide) {
+    var sets = slide.querySelectorAll(".panel-tabset");
+    if (sets.length === 0) return [null];
+    var combos = [[]];
+    sets.forEach(function (ts) {
+      var n = Math.max(1, tabsetTabs(ts).length);
+      var next = [];
+      combos.forEach(function (c) {
+        for (var i = 0; i < n; i++) next.push(c.concat(i));
+      });
+      combos = next;
+    });
+    return combos.slice(0, 16); // sanity cap
+  }
+
+  function applyCombo(slide, combo) {
+    if (!combo) return false;
+    var sets = slide.querySelectorAll(".panel-tabset");
+    var changed = false;
+    sets.forEach(function (ts, si) {
+      var tabs = tabsetTabs(ts);
+      var want = tabs[combo[si]];
+      if (want &&
+          want.getAttribute("aria-selected") !== "true" &&
+          !want.classList.contains("active")) {
+        want.click();
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
+  /* fixed overlay chrome that must never end up in the PDF: our own
+   * UI plus common third-party deck widgets (laser pointers, progress
+   * indicators, tooltips, lightboxes) */
+  var PDF_IGNORE_SEL =
+    "#ink-canvas, #ink-orb-root, #ink-toast, #ink-laser, " +
+    "#ink-eraser-ring, .ink-text-editor, .ink-text-controls, " +
+    ".ink-sel-handle, #ink-board-bar, " +
+    "#laser-container, #laser-canvas, .cursor-dropdown, " +
+    ".indicator-settings-btn, .indicator-settings-panel, " +
+    ".indicator-tooltip, [data-tippy-root], .tippy-box, " +
+    ".glightbox-container, .slide-menu-button, " +
+    ".slide-chalkboard-buttons";
+
+  function exportPdf() {
+    if (!window.html2canvas || !window.jspdf) {
+      // vendored libraries missing (e.g. legacy deck): fall back
+      printPdf();
+      return;
+    }
+    commitTextEditor();
+    deselect();
+    closeBloom();
+    hideMenu();
+    document.body.classList.add("ink-exporting");
+    var slides = deck.getSlides();
+    var orig = deck.getIndices();
+    var origTransition = deck.getConfig().transition;
+    deck.configure({ transition: "none" });
+    var W = window.innerWidth, H = window.innerHeight;
+    var fmt = [W, H];
+    var ori = W >= H ? "l" : "p";
+    var pdf = new window.jspdf.jsPDF({
+      orientation: ori, unit: "px", format: fmt,
+      hotfixes: ["px_scaling"]
+    });
+
+    // one page per slide + one per extra tab combination, in order,
+    // then any non-empty whiteboard pages at the end
+    var tasks = [];
+    slides.forEach(function (sl) {
+      tabCombos(sl).forEach(function (cb) {
+        tasks.push({ slide: sl, combo: cb });
+      });
+    });
+    var origBoard = boardOn, origBoardPage = boardPage;
+    for (var bp = 0; bp < boardPages; bp++) {
+      if ((strokes["board." + bp] || []).length > 0) {
+        tasks.push({ board: bp });
+      }
+    }
+
+    var i = 0;
+
+    function setBoardCapture(on, page) {
+      boardOn = on;
+      if (page != null) boardPage = page;
+      document.body.classList.toggle("ink-board-on", on);
+      invalidate();
+      redraw();
+    }
+
+    function finish(ok) {
+      setBoardCapture(origBoard, origBoardPage);
+      deck.slide(orig.h, orig.v || 0);
+      deck.configure({ transition: origTransition });
+      document.body.classList.remove("ink-exporting");
+      if (ok) {
+        pdf.save((document.title || "slides")
+          .replace(/\s+/g, "-") + ".pdf");
+        showToast("PDF exported (" + tasks.length + " pages)");
+      } else {
+        showToast("PDF export failed");
+      }
+    }
+
+    function step() {
+      if (i >= tasks.length) { finish(true); return; }
+      showToast("Rendering PDF… " + (i + 1) + "/" + tasks.length,
+        60000);
+      var task = tasks[i];
+      var switched = false;
+      if (task.board != null) {
+        setBoardCapture(true, task.board);
+      } else {
+        setBoardCapture(false, null);
+        var idx = deck.getIndices(task.slide);
+        deck.slide(idx.h, idx.v || 0);
+        switched = applyCombo(task.slide, task.combo);
+      }
+      setTimeout(function () {
+        var cur = deck.getCurrentSlide();
+        window.html2canvas(document.body, {
+          scale: 1.5,
+          useCORS: true,
+          logging: false,
+          width: W, height: H,
+          windowWidth: W, windowHeight: H,
+          ignoreElements: function (el) {
+            if (el.matches && el.matches(PDF_IGNORE_SEL)) return true;
+            // skip every slide except the visible one: html2canvas
+            // walking the whole deck is what made exports slow
+            return el.tagName === "SECTION" &&
+                   el !== cur &&
+                   !el.contains(cur) &&
+                   !cur.contains(el);
+          }
+        }).then(function (shot) {
+          var out = document.createElement("canvas");
+          out.width = shot.width;
+          out.height = shot.height;
+          var c2 = out.getContext("2d");
+          c2.drawImage(shot, 0, 0);
+          // the live ink canvas shows this slide+tab's drawings
+          c2.drawImage(canvas, 0, 0, out.width, out.height);
+          if (i > 0) pdf.addPage(fmt, ori);
+          pdf.addImage(out.toDataURL("image/jpeg", 0.9),
+            "JPEG", 0, 0, W, H);
+          i++;
+          step();
+        }).catch(function () { finish(false); });
+      }, switched ? 250 : 180);
+    }
+    step();
+  }
+
+  function printPdf() {
+    try { sessionStorage.setItem("quarto-ink-print", "1"); }
+    catch (e) { /* ignore */ }
+    var parts = location.href.split("#");
+    var url = parts[0] +
+      (parts[0].indexOf("?") >= 0 ? "&" : "?") + "print-pdf";
+    location.href = url + (parts[1] ? "#" + parts[1] : "");
+  }
+
+  /* ---------- magnifier lens ----------
+   * Hold-to-magnify: while the zoom tool is pressed, a circular lens
+   * follows the pointer showing a 2.2x view. The deck is rasterised
+   * once per slide/tab/board state (with the shared html2canvas
+   * pipeline) and cached; live ink is composited on top so fresh
+   * strokes are magnified too. */
+
+  var LENS_R = 120;      // lens radius, css px
+  var LENS_ZOOM = 2.2;
+  var LENS_SCALE = 2;    // snapshot resolution factor
+  var lens = { el: null, cv: null, c2: null, shot: null, key: "" };
+
+  function buildLens() {
+    lens.el = document.createElement("div");
+    lens.el.id = "ink-lens";
+    lens.cv = document.createElement("canvas");
+    lens.cv.width = LENS_R * 2 * LENS_SCALE;
+    lens.cv.height = LENS_R * 2 * LENS_SCALE;
+    lens.el.appendChild(lens.cv);
+    lens.c2 = lens.cv.getContext("2d");
+    document.body.appendChild(lens.el);
+  }
+
+  function lensKey() {
+    return slideKey() + "|" + window.innerWidth + "x" +
+      window.innerHeight + "|" + (boardOn ? boardBg : "s");
+  }
+
+  function invalidateLens() {
+    lens.shot = null;
+    lens.key = "";
+  }
+
+  function ensureLensShot(cb) {
+    var key = lensKey();
+    if (lens.shot && lens.key === key) { cb(); return; }
+    if (!window.html2canvas) { cb(); return; }
+    var cur = deck.getCurrentSlide();
+    window.html2canvas(document.body, {
+      scale: LENS_SCALE,
+      useCORS: true,
+      logging: false,
+      width: window.innerWidth, height: window.innerHeight,
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight,
+      ignoreElements: function (el) {
+        if (el.matches && el.matches(PDF_IGNORE_SEL)) return true;
+        return el.tagName === "SECTION" &&
+               el !== cur &&
+               !el.contains(cur) &&
+               !cur.contains(el);
+      }
+    }).then(function (shot) {
+      lens.shot = shot;
+      lens.key = key;
+      cb();
+    }).catch(function () { cb(); });
+  }
+
+  function moveLens(x, y) {
+    if (!lens.el) return;
+    lens.el.style.left = x + "px";
+    lens.el.style.top = y + "px";
+    lens.el.style.display = "block";
+    var c2 = lens.c2;
+    var out = LENS_R * 2 * LENS_SCALE;
+    c2.clearRect(0, 0, out, out);
+    var srcCss = (LENS_R * 2) / LENS_ZOOM; // css px shown in the lens
+    if (lens.shot) {
+      c2.drawImage(lens.shot,
+        (x - srcCss / 2) * LENS_SCALE, (y - srcCss / 2) * LENS_SCALE,
+        srcCss * LENS_SCALE, srcCss * LENS_SCALE,
+        0, 0, out, out);
+    } else {
+      c2.fillStyle = "#fff";
+      c2.fillRect(0, 0, out, out);
+    }
+    // live ink on top (canvas is devicePixelRatio scaled)
+    var dpr = window.devicePixelRatio || 1;
+    c2.drawImage(canvas,
+      (x - srcCss / 2) * dpr, (y - srcCss / 2) * dpr,
+      srcCss * dpr, srcCss * dpr,
+      0, 0, out, out);
+  }
+
+  function hideLens() {
+    if (lens.el) lens.el.style.display = "none";
+  }
+
+  /* ---------- whiteboard surface & page bar ---------- */
+
+  function buildBoard() {
+    boardEl = document.createElement("div");
+    boardEl.id = "ink-board";
+    document.body.appendChild(boardEl);
+
+    boardBar = document.createElement("div");
+    boardBar.id = "ink-board-bar";
+    boardBar.className = "ink-text-controls ink-sel-controls";
+
+    function btn(svg, label, fn) {
+      var b = document.createElement("button");
+      b.className = "ink-text-btn";
+      b.innerHTML = svg;
+      b.title = label;
+      b.setAttribute("aria-label", label);
+      b.addEventListener("pointerdown", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        fn();
+      });
+      boardBar.appendChild(b);
+      return b;
+    }
+
+    btn(ICONS.prev, "Previous page", function () {
+      setBoardPage(boardPage - 1);
+    });
+    boardLabel = document.createElement("span");
+    boardLabel.className = "ink-board-label";
+    boardBar.appendChild(boardLabel);
+    btn(ICONS.next, "Next page", function () {
+      setBoardPage(boardPage + 1);
+    });
+    btn(ICONS.plus, "New page", function () {
+      boardPages++;
+      setBoardPage(boardPages - 1);
+      saveSettings();
+    });
+    btn(ICONS.bg, "Background (dots / squared / ruled / blank)",
+      cycleBoardBg);
+    btn(ICONS.camera, "Paste current slide onto this page",
+      captureSlideToBoard);
+    // deleting a page is destructive: it arms on the first tap and
+    // deletes on a second tap within 2.5s
+    var delArm = null;
+    var delBtn = btn(ICONS.trash, "Delete this page", function () {
+      if (delArm) {
+        clearTimeout(delArm);
+        delArm = null;
+        delBtn.classList.remove("ink-armed-danger");
+        deleteBoardPage();
+      } else {
+        delBtn.classList.add("ink-armed-danger");
+        showToast("Tap again to delete this page");
+        delArm = setTimeout(function () {
+          delArm = null;
+          delBtn.classList.remove("ink-armed-danger");
+        }, 2500);
+      }
+    });
+    delBtn.classList.add("ink-text-trash");
+    btn(ICONS.close, "Close whiteboard", function () {
+      toggleBoard(false);
+    });
+    document.body.appendChild(boardBar);
+    applyBoardBg();
+  }
+
+  function refreshBoardBar() {
+    if (boardLabel) {
+      boardLabel.textContent = (boardPage + 1) + " / " + boardPages;
+    }
+  }
+
+  /* remove the current page: later pages shift down; the last
+   * remaining page is cleared instead of removed */
+  function deleteBoardPage() {
+    commitTextEditor();
+    deselect();
+    current = null;
+    if (boardPages <= 1) {
+      strokes["board.0"] = [];
+      delete history["board.0"];
+      showToast("Page cleared");
+    } else {
+      for (var p = boardPage; p < boardPages - 1; p++) {
+        strokes["board." + p] = strokes["board." + (p + 1)] || [];
+        delete history["board." + p];
+      }
+      delete strokes["board." + (boardPages - 1)];
+      delete history["board." + (boardPages - 1)];
+      boardPages--;
+      if (boardPage >= boardPages) boardPage = boardPages - 1;
+      showToast("Page deleted");
+    }
+    invalidate();
+    invalidateLens();
+    redraw();
+    refreshBoardBar();
+    refreshHistoryButtons();
+    persist();
+    saveSettings();
+  }
+
+  function setBoardPage(p) {
+    if (p < 0 || p >= boardPages || p === boardPage) return;
+    commitTextEditor();
+    deselect();
+    current = null;
+    boardPage = p;
+    invalidateLens();
+    refreshBoardBar();
+    invalidate();
+    redraw();
+    refreshHistoryButtons();
+    saveSettings();
+  }
+
+  function toggleBoard(on) {
+    if (on === boardOn) return;
+    commitTextEditor();
+    deselect();
+    current = null;
+    boardOn = on;
+    invalidateLens();
+    hideLens();
+    if (on && !drawMode) setDrawMode(true);
+    document.body.classList.toggle("ink-board-on", boardOn);
+    refreshBoardBar();
+    invalidate();
+    redraw();
+    refreshHistoryButtons();
+    syncBoardPetal();
+    showToast(boardOn
+      ? "Whiteboard " + (boardPage + 1) + " / " + boardPages
+      : "Back to slides");
+  }
+
+  /* rasterise the current slide (with its ink) and paste it onto
+   * the active whiteboard page as a movable, resizable image. Input
+   * is blocked during the capture so the board state cannot change
+   * underneath the async rasteriser. */
+  var capturing = false;
+
+  function captureSlideToBoard() {
+    if (!boardOn || !window.html2canvas || capturing) return;
+    capturing = true;
+    showToast("Capturing slide…", 8000);
+    var wasBoard = boardOn;
+    boardOn = false;
+    document.body.classList.remove("ink-board-on");
+    invalidate();
+    redraw();
+
+    function restoreBoard() {
+      boardOn = drawMode ? wasBoard : false;
+      document.body.classList.toggle("ink-board-on", boardOn);
+      invalidate();
+      invalidateLens();
+      redraw();
+      capturing = false;
+    }
+    var cur = deck.getCurrentSlide();
+    var SC = 1.5;
+    window.html2canvas(document.body, {
+      scale: SC,
+      useCORS: true,
+      logging: false,
+      width: window.innerWidth, height: window.innerHeight,
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight,
+      ignoreElements: function (el) {
+        if (el.matches && el.matches(PDF_IGNORE_SEL)) return true;
+        if (el.id === "ink-board") return true;
+        return el.tagName === "SECTION" &&
+               el !== cur &&
+               !el.contains(cur) &&
+               !cur.contains(el);
+      }
+    }).then(function (shot) {
+      var sr = slidesEl.getBoundingClientRect();
+      var out = document.createElement("canvas");
+      out.width = Math.max(1, Math.round(sr.width * SC));
+      out.height = Math.max(1, Math.round(sr.height * SC));
+      var c2 = out.getContext("2d");
+      c2.drawImage(shot,
+        sr.left * SC, sr.top * SC, sr.width * SC, sr.height * SC,
+        0, 0, out.width, out.height);
+      // slide ink lives on the live canvas (dpr scaled)
+      var dpr = window.devicePixelRatio || 1;
+      c2.drawImage(canvas,
+        sr.left * dpr, sr.top * dpr, sr.width * dpr, sr.height * dpr,
+        0, 0, out.width, out.height);
+      var src = out.toDataURL("image/jpeg", 0.85);
+      // back onto the board, then add the image in slide coords
+      restoreBoard();
+      if (!boardOn) {
+        showToast("Capture cancelled");
+        return;
+      }
+      var f = slideFrame();
+      var slideW = sr.width / f.scale;
+      var slideH = sr.height / f.scale;
+      var w = slideW * 0.72;
+      var h = w * (out.height / out.width);
+      var x = (slideW - w) / 2;
+      var y = Math.max(20, (slideH - h) / 2);
+      // cascade repeated pastes so they never hide each other
+      var existing = slideStrokes().filter(function (st) {
+        return st.tool === "image";
+      }).length;
+      var offset = (existing % 8) * 28;
+      var imgStroke = {
+        tool: "image", src: src,
+        points: [[x + offset, y + offset],
+                 [x + w + offset, y + h + offset]]
+      };
+      execute({ type: "add", stroke: imgStroke });
+      selectStroke(imgStroke);
+      showToast("Slide pasted onto the board");
+    }).catch(function () {
+      restoreBoard();
+      showToast("Capture failed");
+    });
+  }
+
+  function syncBoardPetal() {
+    if (!bloomEl) return;
+    var b = bloomEl.querySelector("[data-key='board']");
+    if (b) b.classList.toggle("ink-on", boardOn);
+  }
+
+  /* ---------- named sessions: switch, create, day prompt ----------
+   * Annotation sets are day-aware: when the deck opens and the last
+   * ink is from an earlier day, a gentle prompt offers to start a
+   * fresh session. Naming is optional (defaults to the date). */
+
+  var sessionDialog = null;
+
+  function sessionName() {
+    return session === "" ? "Default" : session;
+  }
+
+  function dateName(d) {
+    d = d || new Date();
+    return d.toISOString().slice(0, 10);
+  }
+
+  function switchSession(name) {
+    if (name === session) return;
+    commitTextEditor();
+    deselect();
+    current = null;
+    persist();
+    session = name;
+    try { localStorage.setItem(docBase + ":session", session); }
+    catch (e) { /* ignore */ }
+    history = {};
+    restore();
+    invalidate();
+    invalidateLens();
+    redraw();
+    refreshHistoryButtons();
+    showToast("Session: " + sessionName());
+  }
+
+  function newSession(name) {
+    name = String(name || "").trim() || dateName();
+    if (name === "Default") name = dateName();
+    var list = sessionList();
+    if (list.indexOf(name) < 0) {
+      list.push(name);
+      saveSessionList(list);
+    }
+    switchSession(name);
+  }
+
+  function buildSessionDialog() {
+    sessionDialog = document.createElement("div");
+    sessionDialog.id = "ink-session-dialog";
+    sessionDialog.style.display = "none";
+    document.body.appendChild(sessionDialog);
+  }
+
+  function hideSessionDialog() {
+    if (sessionDialog) sessionDialog.style.display = "none";
+  }
+
+  function showSessionDialog(fromDate) {
+    if (!sessionDialog) buildSessionDialog();
+    var d = sessionDialog;
+    d.innerHTML = "";
+    var title = document.createElement("div");
+    title.className = "ink-session-title";
+    title.textContent = fromDate
+      ? "Your ink here is from " + dateName(fromDate) + "."
+      : "Annotation sessions";
+    d.appendChild(title);
+
+    // existing sessions, tap to switch
+    var names = [""].concat(sessionList());
+    var listEl = document.createElement("div");
+    listEl.className = "ink-session-list";
+    names.forEach(function (n) {
+      var b = document.createElement("button");
+      b.className = "ink-session-item" +
+        (n === session ? " ink-on" : "");
+      b.textContent = (n === "" ? "Default" : n);
+      b.addEventListener("click", function () {
+        hideSessionDialog();
+        switchSession(n);
+      });
+      listEl.appendChild(b);
+    });
+    d.appendChild(listEl);
+
+    var row = document.createElement("div");
+    row.className = "ink-session-row";
+    var input = document.createElement("input");
+    input.type = "text";
+    input.className = "ink-session-input";
+    input.placeholder = dateName() + " (optional name)";
+    input.addEventListener("keydown", function (e) {
+      e.stopPropagation();
+      if (e.key === "Enter") startNew();
+      if (e.key === "Escape") hideSessionDialog();
+    });
+    var go = document.createElement("button");
+    go.className = "ink-session-new";
+    go.setAttribute("data-ink-new", "");
+    go.textContent = "Start new session";
+    function startNew() {
+      hideSessionDialog();
+      newSession(input.value);
+    }
+    go.addEventListener("click", startNew);
+    row.appendChild(input);
+    row.appendChild(go);
+    d.appendChild(row);
+
+    var keep = document.createElement("button");
+    keep.className = "ink-session-keep";
+    keep.setAttribute("data-ink-keep", "");
+    keep.textContent = fromDate
+      ? "Keep drawing in “" + sessionName() + "”"
+      : "Close";
+    keep.addEventListener("click", hideSessionDialog);
+    d.appendChild(keep);
+
+    d.style.display = "flex";
+  }
+
+  /* on load: last ink from another day? offer a fresh session */
+  function checkSessionPrompt() {
+    if (window.InkAnnotateSeed) return;
+    var ts = 0;
+    try {
+      ts = Number(localStorage.getItem(docKey() + ":ts")) || 0;
+    } catch (e) { /* ignore */ }
+    if (!ts) return;
+    var hasInk = Object.keys(strokes).some(function (k) {
+      return strokes[k].length > 0;
+    });
+    if (!hasInk) return;
+    var then = new Date(ts);
+    if (then.toDateString() === new Date().toDateString()) return;
+    showSessionDialog(then);
+  }
+
   /* ---------- burger menu (reveal-menu) integration ----------
    * Quarto's burger menu builds its Tools panel from config at init;
    * we append our own tool item once that list exists. */
@@ -2275,22 +3714,83 @@ window.InkAnnotate = (function () {
     canvas.addEventListener("pointerleave", function () {
       eraserRing.style.display = "none";
     });
+    // while a pass-through zone is engaged the canvas receives no
+    // events; watch the document to re-arm it once the pointer
+    // leaves the zone
+    document.addEventListener("pointermove", function (e) {
+      if (!drawMode || !passThrough) return;
+      if (!interactiveUnder(e.clientX, e.clientY, PASS_ZONE_SEL)) {
+        releasePass();
+      }
+    }, true);
+    // tab switches change the active ink layer: refresh after them
+    document.addEventListener("click", function (e) {
+      if (!e.target || !e.target.closest) return;
+      if (e.target.closest(
+          ".panel-tabset [role='tab'], .panel-tabset .nav-link")) {
+        cancelTextEditor();
+        deselect();
+        invalidateLens();
+        current = null;
+        setTimeout(function () {
+          invalidate();
+          redraw();
+          refreshHistoryButtons();
+        }, 60);
+      }
+    }, true);
     window.addEventListener("resize", resizeCanvas);
     resizeCanvas();
   }
 
+  function onKeyOnce(e) {
+    if (e.__inkHandled) return;
+    e.__inkHandled = true;
+    onKey(e);
+  }
+
   function onKey(e) {
+    // the deck may not be initialized yet (see the early listener
+    // registration note below); nothing to do until it is
+    if (!deck) return;
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" ||
         e.target.isContentEditable) {
       return;
     }
     var k = e.key.toLowerCase();
+    if (capturing) {
+      showToast("Capturing slide…");
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) {
+      // copy/paste for the selected stroke; other combos are the
+      // browser's business
+      if (drawMode && k === "c" && selected) {
+        clipboard = JSON.parse(JSON.stringify(selected, stripPrivate));
+        showToast("Copied");
+      } else if (drawMode && k === "v" && clipboard) {
+        e.preventDefault();
+        var pasted = JSON.parse(JSON.stringify(clipboard));
+        pasted.points = pasted.points.map(function (p) {
+          p[0] += 16;
+          p[1] += 16;
+          return p;
+        });
+        execute({ type: "add", stroke: pasted });
+        selectStroke(pasted);
+        showToast("Pasted");
+      }
+      return;
+    }
     if (k === "d") {
       if (drawMode) setDrawMode(false);
       else { setDrawMode(true); openBloom(); }
     }
     if (!drawMode) return;
-    if (k === "escape") setDrawMode(false);
+    if (k === "escape") {
+      if (boardOn) toggleBoard(false);
+      else setDrawMode(false);
+    }
     if (k === "z") undo();
     if (k === "y") redo();
     if (k === "p") setTool("pen");
@@ -2301,15 +3801,103 @@ window.InkAnnotate = (function () {
     if (k === "l") setTool("laser");
   }
 
+  /* Real key presses go to whatever element currently has focus. If
+   * that's an embedded same-origin iframe (a leaflet/plotly widget,
+   * an embedded chart), the keydown never reaches this window at
+   * all — it's a separate document. Reach into every same-origin
+   * iframe we can and forward its keydowns through onKeyOnce too. */
+  var wiredFrames = new WeakSet();
+
+  function wireIframe(f) {
+    if (wiredFrames.has(f)) return;
+    var w;
+    try { w = f.contentWindow; } catch (e) { return; }
+    if (!w) return;
+    try {
+      // touching .document throws for cross-origin frames
+      if (!w.document) return;
+    } catch (e) { return; }
+    try {
+      w.addEventListener("keydown", onKeyOnce, true);
+      wiredFrames.add(f);
+    } catch (e) { /* cross-origin after all: ignore */ }
+  }
+
+  function wireAllIframes() {
+    document.querySelectorAll("iframe").forEach(function (f) {
+      wireIframe(f);
+      f.addEventListener("load", function () { wireIframe(f); });
+    });
+  }
+
+  /* Keyboard listeners are registered the instant this script parses
+   * (module load time), not inside init(). init() only runs once
+   * Reveal reports ready, which is late: by then a deck's own inline
+   * scripts may already have registered a window/capture keydown
+   * listener that calls stopImmediatePropagation, silently eating D
+   * before ink ever sees it. Registering here — as early as
+   * possible, in the capture phase on window, which fires before
+   * any bubble-phase or later-registered capture-phase listener —
+   * closes that race. onKey() itself no-ops until deck exists. */
+  window.addEventListener("keydown", onKeyOnce, true);
+  document.addEventListener("keydown", onKeyOnce);
+
   return {
     id: "InkAnnotate",
     init: function (reveal) {
       deck = reveal;
       slidesEl = deck.getRevealElement().querySelector(".slides");
+      if (/print-pdf/gi.test(window.location.search)) {
+        initPrintMode(); // static ink overlays only, no live UI
+        return;
+      }
+      // ---- user configuration from the deck's YAML ----
+      // format: revealjs: ink: { colors: [...], default-tool: pen,
+      //   board-background: grid, pen-only: true, github: false }
+      var uc = deck.getConfig().ink || {};
+      function copt(k) {
+        if (uc[k] !== undefined) return uc[k];
+        var camel = k.replace(/-([a-z])/g, function (_, c) {
+          return c.toUpperCase();
+        });
+        return uc[camel];
+      }
+      var cols = copt("colors");
+      if (Array.isArray(cols) && cols.length > 0) {
+        COLORS = cols.slice(0, 12).map(String);
+        var ci = function (i) { return Math.min(i, COLORS.length - 1); };
+        toolCfg.pen.color = COLORS[0];
+        toolCfg.text.color = COLORS[0];
+        toolCfg.highlighter.color = COLORS[ci(2)];
+        toolCfg.note.color = COLORS[ci(2)];
+        toolCfg.shape.color = COLORS[ci(5)];
+      }
+      var dt = copt("default-tool");
+      if (typeof dt === "string" && (toolCfg[dt] ||
+          ["eraser", "laser", "zoom"].indexOf(dt) >= 0)) {
+        tool = dt;
+      }
+      var bcfg = copt("board-background");
+      if (BOARD_BGS.indexOf(bcfg) >= 0) boardBg = bcfg;
+      if (copt("pen-only") === true) penOnly = true;
+      inkShowGithub = copt("github") !== false;
+      var scfg = copt("session");
+      if (typeof scfg === "string" && scfg.trim()) {
+        session = scfg.trim() === "Default" ? "" : scfg.trim();
+        var slist = sessionList();
+        if (session && slist.indexOf(session) < 0) {
+          slist.push(session);
+          saveSessionList(slist);
+        }
+      }
+
       loadSettings();
       restore();
       buildCanvas();
       buildOrb();
+      buildBoard();
+      buildLens();
+      refreshBoardBar();
       addMenuTool();
       if (deck.registerKeyboardShortcut) {
         // shows up in reveal's keyboard help overlay (?)
@@ -2318,6 +3906,8 @@ window.InkAnnotate = (function () {
       deck.on("slidechanged", function () {
         cancelTextEditor();
         deselect();
+        invalidateLens();
+        hideLens();
         current = null;
         eraseBatch = null;
         invalidate();
@@ -2328,7 +3918,64 @@ window.InkAnnotate = (function () {
         invalidate();
         redraw();
       });
-      document.addEventListener("keydown", onKey);
+      // reveal's final layout can land after our first paint;
+      // repaint once the deck reports ready so restored/seeded
+      // ink is always positioned correctly on first load
+      deck.on("ready", function () {
+        invalidate();
+        redraw();
+      });
+      // day-aware sessions: ask once the deck has settled
+      setTimeout(checkSessionPrompt, 1500);
+      // reach into embedded same-origin widgets (maps, charts) so D
+      // still works when focus is inside one of their iframes
+      wireAllIframes();
+      new MutationObserver(function (muts) {
+        for (var mi = 0; mi < muts.length; mi++) {
+          var added = muts[mi].addedNodes;
+          for (var ni = 0; ni < added.length; ni++) {
+            var n = added[ni];
+            if (n.tagName === "IFRAME") wireIframe(n);
+            else if (n.querySelectorAll) {
+              n.querySelectorAll("iframe").forEach(wireIframe);
+            }
+          }
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+      // auto-animate and transitions settle after slidechanged;
+      // repaint when the final layout is in place
+      deck.on("slidetransitionend", function () {
+        invalidate();
+        redraw();
+      });
+      // in overview the fullscreen ink canvas no longer lines up
+      // with the shrunken slides: hide it and pause drawing
+      deck.on("overviewshown", function () {
+        setDrawMode(false);
+        canvas.style.visibility = "hidden";
+      });
+      deck.on("overviewhidden", function () {
+        canvas.style.visibility = "";
+        invalidate();
+        redraw();
+      });
+      // reveal 5 scroll view stacks slides vertically; slide-frame
+      // math is meaningless there, so ink hides until it is left
+      var wasScroll = scrollViewActive();
+      new MutationObserver(function () {
+        var scroll = scrollViewActive();
+        if (scroll === wasScroll) return;
+        wasScroll = scroll;
+        if (scroll) {
+          setDrawMode(false);
+          canvas.style.visibility = "hidden";
+        } else {
+          canvas.style.visibility = "";
+          invalidate();
+          redraw();
+        }
+      }).observe(deck.getRevealElement(),
+        { attributes: true, attributeFilter: ["class"] });
     },
     // exposed for testing and programmatic use
     _api: {
@@ -2348,8 +3995,32 @@ window.InkAnnotate = (function () {
       },
       commitTextEditor: commitTextEditor,
       exportHtml: exportHtml,
+      exportPdf: exportPdf,
+      exportPng: exportPng,
+      toggleBoard: toggleBoard,
+      setBoardPage: setBoardPage,
+      setBoardBackground: setBoardBackground,
+      deleteBoardPage: deleteBoardPage,
+      sessionState: function () {
+        return { active: sessionName(), list: sessionList() };
+      },
+      newSession: newSession,
+      switchSession: switchSession,
+      checkSessionPrompt: checkSessionPrompt,
+      boardState: function () {
+        return { on: boardOn, page: boardPage, pages: boardPages };
+      },
+      addBoardPage: function () {
+        boardPages++;
+        setBoardPage(boardPages - 1);
+      },
       getStrokes: function () { return strokes; },
-      storageKey: function () { return docKey; },
+      getTool: function () { return tool; },
+      captureSlideToBoard: captureSlideToBoard,
+      duplicateSelected: function () {
+        if (selected) duplicateStroke(selected);
+      },
+      storageKey: function () { return docKey(); },
       redraw: redraw,
       moveOrb: function (x, y) {
         orbPos = { x: x, y: y };
