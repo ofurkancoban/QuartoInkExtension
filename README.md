@@ -13,6 +13,11 @@ from a rendered export (self-contained HTML, a static file).
 - Requires: Quarto 1.4+, `format: revealjs`
 - Version 0.9.0, MIT licensed (bundles html2canvas and jsPDF, both MIT)
 
+Especially handy for students taking notes on a tablet: annotate
+lecture slides directly with a stylus during class, keep a separate
+session per course or day, and export the annotated deck afterwards
+to study from.
+
 ## Installation
 
 ### Option 1: quarto add (recommended)
