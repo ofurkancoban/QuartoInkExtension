@@ -11,7 +11,7 @@ from a rendered export (self-contained HTML, a static file).
 
 - Repository: https://github.com/ofurkancoban/QuartoInkExtension
 - Requires: Quarto 1.4+, `format: revealjs`
-- Version 0.9.0, MIT licensed (bundles html2canvas and jsPDF, both MIT)
+- Version 0.9.1, MIT licensed (bundles html2canvas and jsPDF, both MIT)
 
 Especially handy for students taking notes on a tablet: annotate
 lecture slides directly with a stylus during class, keep a separate
@@ -139,6 +139,7 @@ ink:
   pen-only: true           # start with palm rejection on
   session: "Class A"       # open the deck in a named session
   github: false            # hide the About entry in the menu
+  auto-show-on-touch: false # don't auto-reveal the orb on tablets
 ---
 ```
 
@@ -205,6 +206,14 @@ picker), stroke sizes, shape kinds, and undo/redo/whiteboard/menu/
 exit actions. The layout is collision-free and always stays on
 screen. Each tool remembers its own color and width.
 
+On tablet-class devices (coarse pointer, no hover, touch, a screen
+wide enough not to be a phone) the orb shows itself automatically on
+load, dimmed and out of the way until tapped — a student picking up
+their tablet in class doesn't need to know the D shortcut exists.
+Laptops and phones are unaffected. Disable this with
+`ink: {auto-show-on-touch: false}` if you'd rather it stayed hidden
+everywhere until D is pressed.
+
 ### Plays well with real decks
 
 - Per-tab ink layers on panel-tabset slides
@@ -246,7 +255,7 @@ reveal's keyboard help (?) and the burger menu's Tools panel gets a
 
 ```bash
 quarto render example.qmd        # demo deck
-quarto render tests/logic.qmd    # self-checking suite, 104 checks
+quarto render tests/logic.qmd    # self-checking suite, 106 checks
 quarto render tests/layout.qmd   # radial menu layout proofs, 24 checks
 ```
 

@@ -62,6 +62,23 @@ window.InkAnnotate = (function () {
   var ERASER_LIFE = 450;
 
   var inkShowGithub = true;
+  var orbAlwaysVisible = false;
+  var orbAutoTouchCfg = true; // false only if the user opted out
+
+  /* Tablets get the orb shown automatically (no D press needed): a
+   * coarse pointer with no hover capability and touch support, on a
+   * screen wide enough to not be a phone. Desktops with touchscreens
+   * (fine pointer available) and phones are excluded. */
+  function isTabletLike() {
+    try {
+      var coarse = window.matchMedia &&
+        window.matchMedia("(pointer: coarse) and (hover: none)").matches;
+      var touch = (navigator.maxTouchPoints || 0) > 0 ||
+        "ontouchstart" in window;
+      var wide = Math.min(window.innerWidth, window.innerHeight) >= 600;
+      return !!(coarse && touch && wide);
+    } catch (e) { return false; }
+  }
 
   /* ---- named sessions: parallel annotation sets per deck ---- */
   var docBase = "quarto-ink:" + STORE_VERSION + ":" + location.pathname;
@@ -2322,9 +2339,11 @@ window.InkAnnotate = (function () {
     canvas.style.touchAction = on ? "none" : "auto";
     document.body.classList.toggle("ink-drawing", on);
     orbRoot.classList.toggle("ink-armed", on);
-    // the orb is fully hidden outside draw mode: it only appears
-    // via the D shortcut or the burger menu tool
-    orbRoot.classList.toggle("ink-shown", on);
+    // the orb is hidden outside draw mode unless the device is a
+    // tablet, where it stays put so students can reach it without
+    // knowing the D shortcut; it only appears via D, the burger menu
+    // tool, or automatically on tablet-like devices
+    orbRoot.classList.toggle("ink-shown", on || orbAlwaysVisible);
     if (!on) {
       hideLaser();
       eraserRing.style.display = "none";
@@ -2936,6 +2955,14 @@ window.InkAnnotate = (function () {
     window.addEventListener("resize", function () {
       clampOrb();
       if (bloomOpen) layoutBloom();
+      // rotating a tablet or resizing the window can change which
+      // side of the tablet-detection heuristic the device falls on
+      if (orbAutoTouchCfg) {
+        orbAlwaysVisible = isTabletLike();
+        if (!drawMode) {
+          orbRoot.classList.toggle("ink-shown", orbAlwaysVisible);
+        }
+      }
     });
   }
 
@@ -3881,6 +3908,8 @@ window.InkAnnotate = (function () {
       if (BOARD_BGS.indexOf(bcfg) >= 0) boardBg = bcfg;
       if (copt("pen-only") === true) penOnly = true;
       inkShowGithub = copt("github") !== false;
+      orbAutoTouchCfg = copt("auto-show-on-touch") !== false;
+      orbAlwaysVisible = orbAutoTouchCfg && isTabletLike();
       var scfg = copt("session");
       if (typeof scfg === "string" && scfg.trim()) {
         session = scfg.trim() === "Default" ? "" : scfg.trim();
@@ -3895,6 +3924,11 @@ window.InkAnnotate = (function () {
       restore();
       buildCanvas();
       buildOrb();
+      if (orbAlwaysVisible) {
+        // tablet: show the orb right away, but stay out of drawing
+        // mode until it's actually tapped or D is pressed
+        orbRoot.classList.add("ink-shown");
+      }
       buildBoard();
       buildLens();
       refreshBoardBar();

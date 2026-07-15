@@ -61,6 +61,47 @@ window.addEventListener("load", function () {
     api.setDrawMode(false);
     check("orb hides again on exit",
       getComputedStyle(orbRoot).display === "none");
+
+    // tablet-like devices (coarse pointer, no hover, touch, wide
+    // enough screen) get the orb shown automatically without D
+    var origMatchMedia = window.matchMedia;
+    var origMaxTouch = Object.getOwnPropertyDescriptor(
+      Navigator.prototype, "maxTouchPoints");
+    var origInnerW = Object.getOwnPropertyDescriptor(window, "innerWidth");
+    var origInnerH = Object.getOwnPropertyDescriptor(window, "innerHeight");
+    function fakeTablet(coarse, touch) {
+      window.matchMedia = function (q) {
+        return { matches: coarse && /pointer: coarse/.test(q) &&
+          /hover: none/.test(q) };
+      };
+      Object.defineProperty(navigator, "maxTouchPoints",
+        { value: touch ? 5 : 0, configurable: true });
+      // the test runner's own window may be shorter than any real
+      // tablet (headless defaults can be under 600px tall); pin the
+      // dimensions so this check reflects the iPad-class viewport
+      // the feature targets, not whatever happens to run the suite
+      Object.defineProperty(window, "innerWidth",
+        { value: coarse ? 1024 : 1280, configurable: true });
+      Object.defineProperty(window, "innerHeight",
+        { value: coarse ? 768 : 800, configurable: true });
+    }
+    fakeTablet(true, true);
+    window.dispatchEvent(new Event("resize"));
+    check("orb auto-shows on a simulated tablet",
+      getComputedStyle(orbRoot).display !== "none" &&
+      !document.body.classList.contains("ink-drawing"));
+    fakeTablet(false, false);
+    window.dispatchEvent(new Event("resize"));
+    check("orb hides again once the tablet signal goes away",
+      getComputedStyle(orbRoot).display === "none");
+    window.matchMedia = origMatchMedia;
+    if (origMaxTouch) {
+      Object.defineProperty(Navigator.prototype, "maxTouchPoints",
+        origMaxTouch);
+    }
+    if (origInnerW) Object.defineProperty(window, "innerWidth", origInnerW);
+    if (origInnerH) Object.defineProperty(window, "innerHeight", origInnerH);
+
     api.setDrawMode(true);
     // yaml configuration reached the plugin
     check("yaml default tool applied", api.getTool() === "highlighter");
