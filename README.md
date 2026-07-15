@@ -1,5 +1,7 @@
 # Ink
 
+![Ink demo: the orb blooms open, drawing with the pen, a shape, and a text note](assets/ink-demo.gif)
+
 Freehand annotation for Quarto reveal.js presentations. Draw over
 your slides during a talk with a pen, highlighter, shapes, text and
 sticky notes, magnify details, open a multi-page whiteboard, keep
