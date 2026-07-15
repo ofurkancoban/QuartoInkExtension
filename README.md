@@ -119,6 +119,28 @@ Note: when inlining the JS files, replace any `</script` inside them
 with `<\/script`. Re-rendering with the plugin enabled is the
 recommended path.
 
+### Opening a standalone deck on iPad
+
+If someone hands you a single self-contained HTML file (for example
+a deck exported with `embed-resources: true`, or one with the
+extension manually inlined as above) rather than a link, iPadOS
+often won't offer Safari in the Files app's "Open With" menu for a
+local HTML file. Two reliable ways around that:
+
+- **Documents by Readdle** (free, App Store): import the file into
+  the app and tap it — Documents has its own built-in browser that
+  runs the page's JavaScript properly, sidestepping the Open With
+  limitation entirely. It can also open the file in Safari from
+  there if you prefer.
+- **Microsoft Edge for iOS**: import/share the file into Edge (via
+  the share sheet or Edge's own file picker under its menu) and open
+  it there — Edge on iOS uses its own document handling and will run
+  the deck normally, orb and all.
+
+Either way, since the deck is a plain local file, the tablet
+detection described below still applies: the Ink Orb appears on its
+own, no keyboard shortcut needed.
+
 ## Configuration (optional)
 
 All settings live under a top level `ink` key in the document or
