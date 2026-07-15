@@ -11,7 +11,6 @@ fully usable with a mouse, and works the same whether the deck is
 served from a web server (`quarto preview`, a hosted site) or opened
 from a rendered export (self-contained HTML, a static file).
 
-- Repository: https://github.com/ofurkancoban/QuartoInkExtension
 - Requires: Quarto 1.4+, `format: revealjs`
 - Version 0.9.1, MIT licensed (bundles html2canvas and jsPDF, both MIT)
 
